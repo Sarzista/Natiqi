@@ -1,0 +1,5 @@
+export { EegMiniChart } from './EegMiniChart';
+
+
+
+

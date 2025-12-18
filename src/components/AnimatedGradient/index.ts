@@ -1,0 +1,3 @@
+export { AnimatedGradient } from './AnimatedGradient';
+
+
