@@ -1,102 +1,45 @@
-# M2M - Message to Mind
+# Natiqi – Mind-to-Message (Development Branch)
 
-A React Native application built with Expo, TypeScript, and glassmorphism design.
+This branch contains the **active development version** of the Natiqi project.  
+Features, interfaces, and integrations in this branch are **under development** and may be incomplete or subject to change.
 
-## 🚀 Tech Stack
+## Project Description
+Natiqi is a web-based assistive communication system designed to convert EEG brain signals into meaningful messages for non-verbal users. The platform provides role-based interfaces for recipients (patients), medical specialists, and administrators to support EEG sessions, monitoring, and result review.
 
-- **Framework**: Expo + React Native + React Native Web
-- **Language**: TypeScript
-- **Navigation**: React Navigation (Native Stack)
-- **Styling**: NativeWind (Tailwind CSS for React Native)
-- **State Management**: React Context + Hooks
+## Branch Purpose
+- `dev` — Active development and experimentation
+- `main` — Stable, submission-ready version (merged later)
 
-## 📁 Project Structure
+This branch reflects ongoing implementation, UI development, and system integration work.
 
-```
-src/
-├── components/          # Reusable UI components
-│   ├── AppHeader/      # Global header component
-│   ├── ScreenContainer/# Layout wrapper component
-│   └── PatientCard/    # Patient card component
-├── screens/            # Screen components
-│   ├── LoginScreen/    # Login screen with glassmorphism
-│   └── DashboardScreen/# Dashboard with patient list
-├── navigation/         # Navigation configuration
-├── services/           # Mock services (auth, patients)
-├── context/            # React Context providers
-├── theme/              # Theme configuration (colors, spacing, typography)
-└── types/              # TypeScript type definitions
-```
+## Current Status
+- Role-based dashboards implemented (Admin, Medical Specialist, Recipient)
+- Authentication interfaces implemented (Login, Create Account, Password Recovery)
+- UI-level EEG session controls and visualizations
+- Patient, session, and report management interfaces
+- Responsive design with RTL (Arabic) support
 
-## 🎨 Design
+> ⚠️ Note: EEG processing, session controls, and analytics are currently implemented at the **interface level** for development and demonstration purposes.
 
-The app features a **glassmorphism** design with:
-- Frosted glass effects
-- Gradient backgrounds
-- Modern, clean UI
-- Responsive layout for web and mobile
+## Technologies Used
+- Frontend: React / React Native (Web)
+- Backend: Python (planned for EEG decoding and APIs)
+- Database: MySQL
+- EEG Device: Emotiv EPOC X
 
-## 🏃 Getting Started
+## Repository Structure
+- `/src` – Application source code
+- `/components` – Reusable UI components
+- `/screens` – Role-based interfaces
+- `/navigation` – Routing and navigation logic
+- `/services` – API and data services
+- `/assets` – Static assets and images
 
-### Prerequisites
+## Development Notes
+- UI components follow a shared design system for consistency
+- Role-based access is enforced at the interface level
+- No clinical claims are made; the system is intended for academic and research use
 
-- Node.js (v18 or higher)
-- npm or yarn
-- Expo CLI (installed globally or via npx)
-
-### Installation
-
-1. Install dependencies:
-```bash
-npm install
-```
-
-2. Start the development server:
-```bash
-npm start
-```
-
-3. Run on your preferred platform:
-- **Web**: `npm run web` or press `w` in the Expo CLI
-- **Android**: `npm run android` or press `a`
-- **iOS**: `npm run ios` or press `i` (macOS only)
-
-## 🔐 Authentication
-
-Currently uses mock authentication:
-- **Email**: Any email address
-- **Password**: Any password
-
-The `authService` can be easily replaced with real API calls later.
-
-## 📱 Features (Phase 1)
-
-- ✅ Login screen with email/password
-- ✅ Dashboard with patient list
-- ✅ Glassmorphism theme
-- ✅ Reusable layout components
-- ✅ Mock data services
-
-## 🔄 Next Steps
-
-- Add Patient Monitor screen
-- Add Alerts screen
-- Connect to real backend API
-- Add more patient details
-- Implement real authentication
-
-## 📝 Development Notes
-
-- All styling uses the centralized theme in `src/theme/`
-- Components are designed to be reusable
-- Services are mock implementations ready to be replaced with API calls
-- Navigation automatically handles authentication state changes
-
-## 🤝 Contributing
-
-This project uses a branch-based workflow:
-- `main` - Stable, production-ready code
-- `dev` - Integration branch for team collaboration
-- `feature/*` - Feature branches for individual work
-
+## Disclaimer
+This branch is intended for **academic development only** and is not suitable for clinical deployment. Features may change before final submission.
 
