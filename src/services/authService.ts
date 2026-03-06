@@ -40,3 +40,39 @@ export const login = async (
 export const logout = async (): Promise<void> => {
   console.log('👋 Logged out');
 };
+
+
+
+/**
+ * Register - called by SignUpScreen
+ */
+export const register = async (
+  nationalId: string,
+  //name: string,
+  phone: string,
+  email: string,
+  password: string,
+  //gender: 'Male' | 'Female'
+): Promise<void> => {
+  console.log('🔌 Sending registration to Flask...');
+
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      national_id: nationalId,
+      // name:     name,
+      phone_num:   phone,
+      email:       email,
+      password:    password,
+      // gender:   gender,
+    }),
+  });
+
+  const result = await res.json();
+  console.log('📥 Register response:', result);
+
+  if (!res.ok) {
+    throw new Error(result.error || 'Registration failed');
+  }
+}

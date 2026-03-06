@@ -14,7 +14,7 @@ db = SQLAlchemy()
 class Admin(db.Model):
     __tablename__ = 'admin'
 
-    national_id  = db.Column(db.Integer, primary_key=True, unique=True, nullable=False)
+    national_id  = db.Column(db.String(20), primary_key=True, unique=True, nullable=False)
     name         = db.Column(db.String(100), nullable=False)
     email        = db.Column(db.String(100), unique=True, nullable=False)
     password     = db.Column(db.String(255), nullable=False)
@@ -40,7 +40,7 @@ class Admin(db.Model):
 class Specialist(db.Model):
     __tablename__ = 'specialist'
 
-    national_id  = db.Column(db.Integer, primary_key=True, unique=True, nullable=False)
+    national_id  = db.Column(db.String(20), primary_key=True, unique=True, nullable=False)
     name         = db.Column(db.String(100), nullable=False)
     email        = db.Column(db.String(100), unique=True, nullable=False)
     password     = db.Column(db.String(255), nullable=False)
@@ -67,13 +67,22 @@ class Specialist(db.Model):
 class RegisteredUser(db.Model):
     __tablename__ = 'registered_user'
 
-    national_id = db.Column(db.Integer, primary_key=True, unique=True, nullable=False)
-    name        = db.Column(db.String(100), nullable=False)
+    national_id = db.Column(db.String(20), primary_key=True, unique=True, nullable=False)
+    name        = db.Column(db.String(100), nullable=True)
     email       = db.Column(db.String(100), nullable=False)
+    role        = db.Column(db.String(25), default='RegisteredUser')
     password    = db.Column(db.String(100), nullable=False)
     gender      = db.Column(db.Enum('Male', 'Female', name='registered_user_gender'))
+    phone_num   =db.Column(db.String(20), unique=True, nullable=False)
 
-
+    def to_dict(self):
+        return {
+            'id':          self.national_id,
+            'name':        self.name,
+            'email':       self.email,
+            'phone':       self.phone_num,
+            'role':        'RegisteredUser',        
+        }
 
 # ──────────────────────────────────────────────
 # Patient
@@ -81,7 +90,7 @@ class RegisteredUser(db.Model):
 class Patient(db.Model):
     __tablename__ = 'patient'
     
-    national_id           = db.Column(db.Integer, primary_key=True, unique=True, nullable=False)
+    national_id           = db.Column(db.String(20), primary_key=True, unique=True, nullable=False)
     name                  = db.Column(db.String(100), nullable=False)
     role                  = db.Column(db.String(20), default='patient')
     date_of_birth         = db.Column(db.Date)
@@ -89,7 +98,7 @@ class Patient(db.Model):
     room_number           = db.Column(db.String(10), unique=True)
     device                =db.Column(db.String(50), default='EPOC X')
     status                = db.Column(db.String(20), default='stable')
-    specialist_national_id = db.Column(db.Integer, db.ForeignKey('specialist.national_id'))
+    specialist_national_id = db.Column(db.String(20), db.ForeignKey('specialist.national_id'))
 
     # Relationships
     sessions              = db.relationship('EEGSession', backref='patient', lazy=True)
@@ -104,7 +113,7 @@ class Patient(db.Model):
             'gender':      self.gender or '',                                             
             'roomNumber':  self.room_number or '',                                      
             'device':      self.device or 'EPOC X',                                         
-            'status':      self.status or 'stable',                                        
+            'status':      self.status or 'Active',                                        
         }
 
 
@@ -134,7 +143,7 @@ class EEGSession(db.Model):
 
     session_id             = db.Column(db.Integer, primary_key=True, autoincrement=True, unique=True)
     patient_national_id    = db.Column(db.Integer, db.ForeignKey('patient.national_id'),    nullable=False)
-    specialist_national_id = db.Column(db.Integer, db.ForeignKey('specialist.national_id'), nullable=False)
+    specialist_national_id = db.Column(db.String(20), db.ForeignKey('specialist.national_id'), nullable=True)
     model_id               = db.Column(db.Integer, db.ForeignKey('model.model_id'),         nullable=True)
     start_time             = db.Column(db.DateTime, nullable=False)
     end_time               = db.Column(db.DateTime, nullable=False)
@@ -157,8 +166,8 @@ class Alert(db.Model):
     alert_id               = db.Column(db.Integer, primary_key=True, autoincrement=True, unique=True)
     alert_session_id       = db.Column(db.Integer, db.ForeignKey('eeg_session.session_id'), nullable=False)
     model_id               = db.Column(db.Integer, db.ForeignKey('model.model_id'),         nullable=True)
-    patient_national_id    = db.Column(db.Integer, db.ForeignKey('patient.national_id'),    nullable=False)
-    specialist_national_id = db.Column(db.Integer, db.ForeignKey('specialist.national_id'), nullable=False)
+    patient_national_id    = db.Column(db.String(20), db.ForeignKey('patient.national_id'),    nullable=False)
+    specialist_national_id = db.Column(db.String(20), db.ForeignKey('specialist.national_id'), nullable=False)
     alert_type             = db.Column(db.Enum('Bathroom', 'Hunger', 'Thirst', 'Medicine', 'Alarm', name='alert_type'), nullable=False)
     alert_timestamp        = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
@@ -172,7 +181,7 @@ class SessionLog(db.Model):
     __tablename__ = 'session_log'
 
     log_id            = db.Column(db.String(100), primary_key=True, unique=True)
-    user_national_id = db.Column(db.Integer, nullable=True)
+    user_national_id = db.Column(db.String(20), nullable=True)
     user_name         = db.Column(db.String(100), nullable=False)
     role              = db.Column(db.Enum('Patient', 'Specialist', 'Admin', name='log_role'), nullable=False)
     event_description = db.Column(db.Text, nullable=False)
@@ -182,3 +191,15 @@ class SessionLog(db.Model):
     duration          = db.Column(db.String(100))
 
 
+# ──────────────────────────────────────────────
+# System Log  (admin/specialist management actions)
+# ──────────────────────────────────────────────
+class SystemLog(db.Model):
+    __tablename__ = 'system_log'
+
+    log_id           = db.Column(db.String(40), primary_key=True)
+    user_name        = db.Column(db.String(100), nullable=False)
+    user_national_id = db.Column(db.String(20),  nullable=False)
+    role             = db.Column(db.String(20), nullable=True)
+    event            = db.Column(db.Text,         nullable=False)
+    log_timestamp    = db.Column(db.DateTime,     nullable=False, default=datetime.utcnow)

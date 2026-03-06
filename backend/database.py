@@ -165,7 +165,7 @@ def seed_database():
             gender                 = 'Male',
             room_number            = 'P-1005',
             device                 = 'EPOC X',
-            status                 = 'Suspended',
+            status                 = 'Inactive',
             specialist_national_id = dr_nora.national_id,
         )
 

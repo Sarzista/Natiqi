@@ -24,6 +24,8 @@ import { AnimatedButton } from '../../components/AnimatedButton';
 import { colors, spacing, typography } from '../../theme';
 import { RootStackParamList } from '../../types/navigation';
 import { UserRole } from '../LandingScreen';
+import { register } from '../../services/authService';
+
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 600;
@@ -60,7 +62,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ navigation, route })
     setPhone(digitsOnly);
   };
 
-  const handleSignUp = () => {
+  const handleSignUp = async () => {
+    // 1. Frontend validation
     if (!nationalId || !phone || !email || !password || !confirmPassword) {
       setError('Please fill all fields.');
       setMessage('');
@@ -76,11 +79,28 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ navigation, route })
     setMessage('');
     setLoading(true);
 
-    // Simulate account creation
-    setTimeout(() => {
+    try {
+      // 2. Call authService → Flask → saves to DB
+      await register(
+        nationalId,
+        // name,    // commented until teammate adds it to UI
+        phone,
+        email,
+        password,
+        // gender,  // commented until teammate adds it to UI
+      );
+
       setLoading(false);
+      setMessage('Account created successfully!');
+
+      // 3. Navigate to verify screen
       navigation.navigate('VerifyAccount', { role, email, phone, nationalId });
-    }, 500);
+
+    } catch (err: any) {
+      setLoading(false);
+      // Shows exact Flask error e.g. "National ID already registered"
+      setError(err.message || 'Registration failed. Please try again.');
+    }
   };
 
   return (
