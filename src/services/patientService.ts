@@ -1,63 +1,65 @@
-/**
- * Mock patient service
- * Later this will be replaced with real API calls
- */
-import { Patient } from '../types';
+const API_BASE = 'http://localhost:5000';
 
-// Mock patient data
-const MOCK_PATIENTS: Patient[] = [
-  {
-    id: '1',
-    name: 'Ahmed Al-Saud',
-    roomNumber: '101',
-    status: 'stable',
-    lastUpdate: '2 hours ago',
-  },
-  {
-    id: '2',
-    name: 'Fatima Al-Rashid',
-    roomNumber: '205',
-    status: 'monitoring',
-    lastUpdate: '30 minutes ago',
-  },
-  {
-    id: '3',
-    name: 'Mohammed Al-Zahrani',
-    roomNumber: '312',
-    status: 'warning',
-    lastUpdate: '1 hour ago',
-  },
-  {
-    id: '4',
-    name: 'Sara Al-Mutairi',
-    roomNumber: '418',
-    status: 'critical',
-    lastUpdate: '15 minutes ago',
-  },
-  {
-    id: '5',
-    name: 'Khalid Al-Otaibi',
-    roomNumber: '502',
-    status: 'stable',
-    lastUpdate: '3 hours ago',
-  },
-];
-
-/**
- * Get all patients
- */
-export const getPatients = async (): Promise<Patient[]> => {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 300));
-  return MOCK_PATIENTS;
+export const getPatients = async (specialistId?: string) => {
+  const url = specialistId
+    ? `${API_BASE}/specialist/patients?specialist_id=${specialistId}`
+    : `${API_BASE}/specialist/patients`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to fetch patients');
+  return data;
 };
 
-/**
- * Get patient by ID
- */
-export const getPatientById = async (id: string): Promise<Patient | null> => {
-  await new Promise(resolve => setTimeout(resolve, 200));
-  return MOCK_PATIENTS.find(p => p.id === id) || null;
+export const addPatient = async (patient: {
+  national_id:        string;
+  name:               string;
+  dob:                string;
+  gender:             'Male' | 'Female';
+  specialist_id?:     string;
+  performed_by_name:  string;   // logged-in specialist's name
+  performed_by_id:    string;   // logged-in specialist's national_id
+}) => {
+  const res = await fetch(`${API_BASE}/specialist/patients`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patient),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to add patient');
+  return data;
 };
 
+export const editPatient = async (
+  nationalId: string,
+  updates: {
+    name:               string;
+    dob:                string;
+    gender:             string;
+    performed_by_name:  string;
+    performed_by_id:    string;
+  }
+) => {
+  const res = await fetch(`${API_BASE}/specialist/patients/${nationalId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to edit patient');
+  return data;
+};
 
+export const deletePatient = async (
+  nationalId:        string,
+  performed_by_name: string,
+  performed_by_id:   string,
+) => {
+  const res = await fetch(`${API_BASE}/specialist/patients/${nationalId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ performed_by_name, performed_by_id }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to delete patient');
+  return data;
+};

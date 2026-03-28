@@ -2,7 +2,7 @@
  * TypeScript type definitions
  */
 
-export type UserRole = 'admin' | 'specialist' | 'patient';
+export type UserRole = 'admin' | 'specialist' | 'RegisteredUser';
 
 export interface User {
   id: string;
@@ -12,10 +12,14 @@ export interface User {
 }
 
 export interface Patient {
-  id: string;
-  name: string;
-  roomNumber: string;
-  status: 'stable' | 'critical' | 'warning' | 'monitoring';
+  nationalId:  string;
+  name:        string;
+  gender:      string;
+  dateOfBirth: string;
+  roomNumber:  string;
+  device:      string;
+  status:      'stable' | 'critical' | 'warning' | 'monitoring';
+  specialistNationalId: string;
   lastUpdate?: string;
 }
 

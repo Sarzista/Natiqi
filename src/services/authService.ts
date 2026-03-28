@@ -1,43 +1,78 @@
 /**
- * Mock authentication service
- * Later this will be replaced with real API calls
+ * Auth Service - Connects to Flask Backend
  */
 import { User, UserRole } from '../types';
 
-/**
- * Fake login function
- * Accepts any email/password and returns a mock user
- */
+const API_BASE = 'http://localhost:5000';
+
 export const login = async (
   email: string,
   password: string,
-  role: UserRole = 'patient'
+  role: UserRole 
 ): Promise<User> => {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 500));
+  console.log('🔌 Connecting to Flask backend...');
+  console.log('📤 Sending:', { national_id: email, password, role });
   
-  // For now, accept any credentials
-  // Later: validate against real API
-  const roleNames = {
-    admin: 'System Admin',
-    specialist: 'Medical Specialist',
-    patient: 'Patient',
-  };
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',  // ← THIS IS CRITICAL!
+    headers: { 
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ 
+      national_id: email, 
+      password: password, 
+      role: role 
+    }),
+  });
 
-  return {
-    id: '1',
-    email,
-    name: `${roleNames[role]} User`,
-    role,
-  };
+  console.log('📥 Response status:', res.status);
+  
+  const data = await res.json();
+  console.log('📥 Response data:', data);
+
+  if (!res.ok) {
+    throw new Error(data.error || 'Login failed');
+  }
+
+  return data as User;
 };
+
+export const logout = async (): Promise<void> => {
+  console.log('👋 Logged out');
+};
+
+
 
 /**
- * Fake logout function
+ * Register - called by SignUpScreen
  */
-export const logout = async (): Promise<void> => {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 200));
-  // Later: call real logout API
-};
+export const register = async (
+  nationalId: string,
+  //name: string,
+  phone: string,
+  email: string,
+  password: string,
+  //gender: 'Male' | 'Female'
+): Promise<void> => {
+  console.log('🔌 Sending registration to Flask...');
 
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      national_id: nationalId,
+      // name:     name,
+      phone_num:   phone,
+      email:       email,
+      password:    password,
+      // gender:   gender,
+    }),
+  });
+
+  const result = await res.json();
+  console.log('📥 Register response:', result);
+
+  if (!res.ok) {
+    throw new Error(result.error || 'Registration failed');
+  }
+}
