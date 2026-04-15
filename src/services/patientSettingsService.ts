@@ -1,0 +1,70 @@
+import { API_BASE } from '../config/apiBase';
+
+export type PatientSettings = {
+  user_national_id: string;
+  notify_hunger: boolean;
+  notify_thirst: boolean;
+  notify_alarm: boolean;
+  notify_bathroom: boolean;
+  notify_medicine: boolean;
+  min_confidence: number;
+  require_consecutive: number;
+  calibration_enabled: boolean;
+  text_size: 'normal' | 'large';
+  high_contrast: boolean;
+  data_retention_days: number;
+  preferred_device: string;
+  updated_at: string;
+};
+
+export async function fetchPatientSettings(national_id: string): Promise<PatientSettings> {
+  const res = await fetch(`${API_BASE}/patient/settings?national_id=${encodeURIComponent(national_id)}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || 'Failed to load settings');
+  return data as PatientSettings;
+}
+
+export async function savePatientSettings(body: {
+  national_id: string;
+  notify_hunger?: boolean;
+  notify_thirst?: boolean;
+  notify_alarm?: boolean;
+  notify_bathroom?: boolean;
+  notify_medicine?: boolean;
+  min_confidence?: number;
+  require_consecutive?: number;
+  calibration_enabled?: boolean;
+  text_size?: 'normal' | 'large';
+  high_contrast?: boolean;
+  data_retention_days?: number;
+  preferred_device?: string;
+}): Promise<PatientSettings> {
+  const res = await fetch(`${API_BASE}/patient/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || 'Failed to save settings');
+  return (data?.settings ?? data) as PatientSettings;
+}
+
+export async function changePatientPassword(body: {
+  national_id: string;
+  current_password: string;
+  new_password: string;
+}): Promise<{ message: string }> {
+  const res = await fetch(`${API_BASE}/patient/change-password`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || 'Failed to change password');
+  return data as { message: string };
+}
+
+export function patientSessionsExportUrl(patient_national_id: string): string {
+  return `${API_BASE}/patient/sessions/export?patient_national_id=${encodeURIComponent(patient_national_id)}`;
+}
+

@@ -2,13 +2,15 @@
  * TypeScript type definitions
  */
 
-export type UserRole = 'admin' | 'specialist' | 'RegisteredUser';
+export type UserRole = 'admin' | 'specialist' | 'RegisteredUser' | 'patient';
 
 export interface User {
   id: string;
   email: string;
   name: string;
   role: UserRole;
+  /** Present for RegisteredUser login/profile; omitted for admin/specialist in API responses. */
+  phone?: string;
 }
 
 export interface Patient {

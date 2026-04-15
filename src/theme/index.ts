@@ -5,6 +5,7 @@
 export { colors } from './colors';
 export { spacing } from './spacing';
 export { typography } from './typography';
+export { gradientTextBgShiftKeyframes } from './webGradientTextAnimation';
 
 export const theme = {
   colors: require('./colors').colors,

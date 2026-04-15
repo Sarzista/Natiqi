@@ -103,7 +103,7 @@ const BackgroundOrbs: React.FC = () => {
   });
 
   return (
-    <Animated.View pointerEvents="none" style={StyleSheet.absoluteFill}>
+    <Animated.View style={[StyleSheet.absoluteFill, { pointerEvents: 'none' }]}>
       {/* Top-left green/teal orb */}
       <Animated.View style={[orbStyles.orbBase, orbStyles.orbTopLeft, orb1Style]}>
         <LinearGradient

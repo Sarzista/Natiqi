@@ -44,7 +44,7 @@ export const AppFooter: React.FC<AppFooterProps> = ({ children, style }) => {
   return (
     <View style={[styles.container, style]}>
       {/* Animated glass background overlay */}
-      <Animated.View pointerEvents="none" style={[styles.glassOverlay, shimmerStyle]}>
+      <Animated.View style={[styles.glassOverlay, shimmerStyle, { pointerEvents: 'none' }]}>
         <LinearGradient
           colors={[
             'rgba(0,166,81,0.20)',   // Aramco green tint

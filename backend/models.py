@@ -19,6 +19,7 @@ class Admin(db.Model):
     email        = db.Column(db.String(100), unique=True, nullable=False)
     password     = db.Column(db.String(255), nullable=False)
     phone        = db.Column(db.String(15))
+    gender       = db.Column(db.String(10), nullable=True)
     role         = db.Column(db.String(20), default='admin')
 
     # Relationships
@@ -45,6 +46,7 @@ class Specialist(db.Model):
     email        = db.Column(db.String(100), unique=True, nullable=False)
     password     = db.Column(db.String(255), nullable=False)
     phone        = db.Column(db.String(15))
+    gender       = db.Column(db.String(10), nullable=True)
     role         = db.Column(db.String(20), default='specialist')
 
     # Relationships
@@ -74,6 +76,9 @@ class RegisteredUser(db.Model):
     password    = db.Column(db.String(100), nullable=False)
     gender      = db.Column(db.Enum('Male', 'Female', name='registered_user_gender'))
     phone_num   =db.Column(db.String(20), unique=True, nullable=False)
+    is_verified = db.Column(db.Boolean, default=False, nullable=False)
+    verification_code = db.Column(db.String(10), nullable=True)
+    verification_expires = db.Column(db.DateTime, nullable=True)
 
     def to_dict(self):
         return {
@@ -82,6 +87,57 @@ class RegisteredUser(db.Model):
             'email':       self.email,
             'phone':       self.phone_num,
             'role':        'RegisteredUser',        
+        }
+
+
+# ──────────────────────────────────────────────
+# Patient Settings (per RegisteredUser)
+# ──────────────────────────────────────────────
+class PatientSettings(db.Model):
+    __tablename__ = 'patient_settings'
+
+    user_national_id = db.Column(db.String(20), db.ForeignKey('registered_user.national_id'), primary_key=True, unique=True, nullable=False)
+
+    # Notifications (per decoded word)
+    notify_hunger = db.Column(db.Boolean, nullable=False, default=True)
+    notify_thirst = db.Column(db.Boolean, nullable=False, default=True)
+    notify_alarm = db.Column(db.Boolean, nullable=False, default=True)
+    notify_bathroom = db.Column(db.Boolean, nullable=False, default=True)
+    notify_medicine = db.Column(db.Boolean, nullable=False, default=True)
+
+    # Safety / decoding behavior
+    min_confidence = db.Column(db.Numeric(5, 4), nullable=False, default=0.25)
+    require_consecutive = db.Column(db.Integer, nullable=False, default=1)
+    calibration_enabled = db.Column(db.Boolean, nullable=False, default=False)
+
+    # Accessibility
+    text_size = db.Column(db.Enum('normal', 'large', name='patient_text_size'), nullable=False, default='normal')
+    high_contrast = db.Column(db.Boolean, nullable=False, default=False)
+
+    # Privacy / data
+    data_retention_days = db.Column(db.Integer, nullable=False, default=365)
+
+    # Device preferences
+    preferred_device = db.Column(db.String(50), nullable=False, default='EPOC X')
+
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'user_national_id': self.user_national_id,
+            'notify_hunger': bool(self.notify_hunger),
+            'notify_thirst': bool(self.notify_thirst),
+            'notify_alarm': bool(self.notify_alarm),
+            'notify_bathroom': bool(self.notify_bathroom),
+            'notify_medicine': bool(self.notify_medicine),
+            'min_confidence': float(self.min_confidence),
+            'require_consecutive': int(self.require_consecutive),
+            'calibration_enabled': bool(self.calibration_enabled),
+            'text_size': str(self.text_size),
+            'high_contrast': bool(self.high_contrast),
+            'data_retention_days': int(self.data_retention_days),
+            'preferred_device': str(self.preferred_device or 'EPOC X'),
+            'updated_at': self.updated_at.isoformat() if self.updated_at else '',
         }
 
 # ──────────────────────────────────────────────
@@ -93,6 +149,7 @@ class Patient(db.Model):
     national_id           = db.Column(db.String(20), primary_key=True, unique=True, nullable=False)
     name                  = db.Column(db.String(100), nullable=False)
     role                  = db.Column(db.String(20), default='patient')
+    password              = db.Column(db.String(255), nullable=True)
     date_of_birth         = db.Column(db.Date)
     gender                = db.Column(db.String(20))
     room_number           = db.Column(db.String(10), unique=True)

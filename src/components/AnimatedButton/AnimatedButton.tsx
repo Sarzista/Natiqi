@@ -2,7 +2,7 @@
  * Animated button component with hover/press effects
  */
 import React, { useEffect } from 'react';
-import { StyleSheet, TouchableOpacity, ActivityIndicator, Platform, View, Dimensions } from 'react-native';
+import { StyleSheet, TouchableOpacity, ActivityIndicator, Platform, View, Dimensions, TextStyle } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
   useSharedValue,
@@ -26,6 +26,7 @@ interface AnimatedButtonProps {
   disabled?: boolean;
   loading?: boolean;
   style?: object;
+  titleStyle?: TextStyle;
 }
 
 export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
@@ -34,6 +35,7 @@ export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
   disabled = false,
   loading = false,
   style,
+  titleStyle,
 }) => {
   const scale = useSharedValue(1);
   const hoverScale = useSharedValue(1);
@@ -142,7 +144,7 @@ export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
         {loading ? (
           <ActivityIndicator color={colors.text.white} />
         ) : (
-          <AppText style={styles.buttonText}>{title}</AppText>
+          <AppText style={[styles.buttonText, titleStyle]}>{title}</AppText>
         )}
       </View>
     </AnimatedTouchableOpacity>

@@ -10,7 +10,14 @@ export type RootStackParamList = {
   ForgotPassword: { role: UserRole };
   ResetPassword: { role: UserRole; nationalId?: string };
   SignUp: { role: UserRole };
-  VerifyAccount: { role: UserRole; email?: string; phone?: string; nationalId?: string };
+  VerifyAccount: {
+    role: UserRole;
+    email?: string;
+    phone?: string;
+    nationalId?: string;
+    /** Filled in dev when API returns `dev_code` (do not rely on this in production) */
+    devCode?: string;
+  };
   Dashboard: undefined;
 };
 

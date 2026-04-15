@@ -1,4 +1,4 @@
-const API_BASE = 'http://localhost:5000';
+import { API_BASE } from '../config/apiBase';
 
 export const getPatients = async (specialistId?: string) => {
   const url = specialistId
@@ -12,6 +12,7 @@ export const getPatients = async (specialistId?: string) => {
 
 export const addPatient = async (patient: {
   national_id:        string;
+  room_number:        string;
   name:               string;
   dob:                string;
   gender:             'Male' | 'Female';
@@ -32,6 +33,7 @@ export const addPatient = async (patient: {
 export const editPatient = async (
   nationalId: string,
   updates: {
+    room_number:        string;
     name:               string;
     dob:                string;
     gender:             string;

@@ -3,11 +3,15 @@
  * Shared dashboard sidebar for all roles (light theme)
  * Uses Natiqi blue/green palette and EEG-focused wording.
  */
-import React from 'react';
+import React, { useState } from 'react';
 import { View, StyleSheet, TouchableOpacity, Platform, Dimensions } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { AppText } from '../AppText';
 import { colors, spacing, typography } from '../../theme';
+import { useAuth } from '../../context/AuthContext';
+import type { RootStackParamList } from '../../types/navigation';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 900;
@@ -49,6 +53,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
   roleLabel,
   variant = 'default',
 }) => {
+  const { logout } = useAuth();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const handleLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await logout();
+      navigation.navigate('Landing');
+    } finally {
+      setLoggingOut(false);
+    }
+  };
+
   const items: { key: SidebarItemKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] =
     variant === 'admin'
       ? [
@@ -81,53 +100,67 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* Role / context header */}
-      <View style={styles.header}>
-        <View style={styles.roleBadge}>
-          <Ionicons
-            name="pulse-outline"
-            size={16}
-            color={colors.logo.chambray}
-          />
-          <AppText style={styles.roleText}>
-            {roleLabel || 'EEG Dashboard'}
+      <View style={styles.topBlock}>
+        {/* Role / context header */}
+        <View style={styles.header}>
+          <View style={styles.roleBadge}>
+            <Ionicons
+              name="pulse-outline"
+              size={16}
+              color={colors.logo.chambray}
+            />
+            <AppText style={styles.roleText}>
+              {roleLabel || 'EEG Dashboard'}
+            </AppText>
+          </View>
+          <AppText style={styles.subtitle}>
+            Mind to Message status
           </AppText>
         </View>
-        <AppText style={styles.subtitle}>
-          Mind to Message status
-        </AppText>
+
+        {/* Navigation items */}
+        <View style={styles.navSection}>
+          {items.map((item) => {
+            const isActive = item.key === activeItem;
+            return (
+              <TouchableOpacity
+                key={item.key}
+                style={[styles.navItem, isActive && styles.navItemActive]}
+                onPress={() => onSelect(item.key)}
+                activeOpacity={0.85}
+              >
+                <View style={styles.navItemInner}>
+                  <Ionicons
+                    name={item.icon}
+                    size={22}
+                    color={isActive ? colors.logo.oceanGreen : colors.text.secondary}
+                  />
+                  <AppText
+                    style={[
+                      styles.navLabel,
+                      isActive && styles.navLabelActive,
+                    ]}
+                  >
+                    {item.label}
+                  </AppText>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
-      {/* Navigation items */}
-      <View style={styles.navSection}>
-        {items.map((item) => {
-          const isActive = item.key === activeItem;
-          return (
-            <TouchableOpacity
-              key={item.key}
-              style={[styles.navItem, isActive && styles.navItemActive]}
-              onPress={() => onSelect(item.key)}
-              activeOpacity={0.85}
-            >
-              <View style={styles.navItemInner}>
-                <Ionicons
-                  name={item.icon}
-                  size={22}
-                  color={isActive ? colors.logo.oceanGreen : colors.text.secondary}
-                />
-                <AppText
-                  style={[
-                    styles.navLabel,
-                    isActive && styles.navLabelActive,
-                  ]}
-                >
-                  {item.label}
-                </AppText>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      <TouchableOpacity
+        style={[styles.logoutButton, loggingOut && styles.logoutButtonDisabled]}
+        onPress={handleLogout}
+        activeOpacity={0.85}
+        disabled={loggingOut}
+        accessibilityRole="button"
+        accessibilityLabel="Log out"
+      >
+        <Ionicons name="log-out-outline" size={22} color={colors.status.error} />
+        <AppText style={styles.logoutLabel}>{loggingOut ? 'Signing out…' : 'Log out'}</AppText>
+      </TouchableOpacity>
     </View>
   );
 };
@@ -137,6 +170,7 @@ const styles = StyleSheet.create({
     width: isSmallScreen ? 220 : 260,
     flex: 1,
     alignSelf: 'stretch',
+    justifyContent: 'space-between',
     // Glassmorphism-style background using Natiqi light mint/blue tones
     backgroundColor: 'rgba(220, 240, 232, 0.16)', // Swans Down with transparency
     borderRadius: 0, // flush edges, no rounded corners
@@ -157,6 +191,9 @@ const styles = StyleSheet.create({
           shadowRadius: 20,
           elevation: 8,
         }),
+  },
+  topBlock: {
+    flexShrink: 1,
   },
   header: {
     marginBottom: spacing.xl,
@@ -208,6 +245,26 @@ const styles = StyleSheet.create({
   navLabelActive: {
     color: colors.logo.oceanGreen,
     fontWeight: typography.weights.bold,
+  },
+  logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.35)',
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+  },
+  logoutButtonDisabled: {
+    opacity: 0.6,
+  },
+  logoutLabel: {
+    fontSize: typography.sizes.base,
+    fontWeight: typography.weights.semibold,
+    color: colors.status.error,
   },
 });
 

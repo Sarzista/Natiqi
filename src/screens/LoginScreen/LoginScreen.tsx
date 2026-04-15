@@ -27,10 +27,11 @@ import { AppHeader } from '../../components/AppHeader';
 import { AppFooter } from '../../components/AppFooter';
 import { AppText } from '../../components/AppText';
 import { useLanguage } from '../../context/LanguageContext';
-import { UserRole } from '../LandingScreen';
+import { UserRole } from '../../types';
 
 const { width, height } = Dimensions.get('window');
 const isSmallScreen = width < 600;
+const PASSWORD_ICON_GUTTER = 48;
 
 
 type LoginScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Login'>;
@@ -49,8 +50,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
   const [error, setError] = useState('');
   const [focusedField, setFocusedField] = useState<'id' | 'password' | null>(null);
   const { login } = useAuth();
-  const { t, language: currentLanguage } = useLanguage();
-  const role = route.params?.role || 'patient';
+  const { t, isRTL } = useLanguage();
+  const role: UserRole = route.params?.role ?? 'RegisteredUser';
+
+  const loginSubtitleKey =
+    role === 'admin'
+      ? 'login.subtitle.admin'
+      : role === 'specialist'
+        ? 'login.subtitle.specialist'
+        : 'login.subtitle.recipient';
+
+  const inputDirectionStyle = {
+    textAlign: (isRTL ? 'right' : 'left') as 'right' | 'left',
+    ...(Platform.OS !== 'web' && { writingDirection: (isRTL ? 'rtl' : 'ltr') as 'rtl' | 'ltr' }),
+  };
+
+  const nationalIdInputStyle = {
+    textAlign: (isRTL ? 'right' : 'left') as 'right' | 'left',
+    ...(Platform.OS !== 'web' && { writingDirection: 'ltr' as const }),
+  };
 
   const handleNationalIdChange = (text: string) => {
     // Allow only digits and clamp to 10 characters
@@ -58,22 +76,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
     setEmail(digitsOnly);
   };
 
-  const getRoleTitle = (role: UserRole) => {
-    switch (role) {
-      case 'admin':
-        return 'Natiqi Admin';
-      case 'specialist':
-        return 'Natiqi Medical';
-      case 'patient':
-        return 'Natiqi Recipient';
-      default:
-        return 'User';
-    }
-  };
-
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
-      setError('Please enter both ID and password');
+      setError(t('login.errorBothFields'));
       return;
     }
 
@@ -85,8 +90,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
       // After successful login, always navigate to Dashboard
       // (even if already authenticated from a previous session)
       navigation.navigate('Dashboard');
-    } catch (err) {
-      setError('Login failed. Please try again.');
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : t('login.errorGeneric');
+      setError(msg);
       console.error('Login error:', err);
     } finally {
       setLoading(false);
@@ -112,139 +119,169 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
           keyboardShouldPersistTaps="handled"
         >
           {/* Glassmorphism card */}
-          <View style={styles.glassCard}>
-        <View style={styles.header}>
-          <AppText style={styles.title}>Welcome</AppText>
-          <AppText style={styles.subtitle}>{getRoleTitle(role)} Login</AppText>
-        </View>
+          <View
+            style={[
+              styles.glassCard,
+              isRTL && Platform.OS === 'web' ? ({ direction: 'rtl' } as object) : null,
+            ]}
+          >
+            <View style={styles.header}>
+              <AppText style={[styles.title, isRTL && styles.loginHeaderTextArabic]}>{t('login.welcome')}</AppText>
+              <AppText style={[styles.subtitle, isRTL && styles.loginHeaderTextArabic]}>
+                {t(loginSubtitleKey)}
+              </AppText>
+            </View>
 
-        <View style={styles.form}>
-          <View style={styles.inputContainer}>
-            <AppText
-              style={[
-                styles.label,
-                focusedField === 'id' && styles.labelFocused,
-              ]}
-            >
-              National ID
-            </AppText>
-            <TextInput
-              style={[
-                styles.input,
-                focusedField === 'id' && styles.inputFocused,
-              ]}
-              placeholder="Enter your National ID"
-              placeholderTextColor={colors.text.muted}
-              value={email}
-              onChangeText={handleNationalIdChange}
-              keyboardType="number-pad"
-              maxLength={10}
-              autoCapitalize="none"
-              autoComplete="off"
-              onFocus={() => setFocusedField('id')}
-              onBlur={() => setFocusedField((prev) => (prev === 'id' ? null : prev))}
-            />
-          </View>
-
-          <View style={styles.inputContainer}>
-            <AppText
-              style={[
-                styles.label,
-                focusedField === 'password' && styles.labelFocused,
-              ]}
-            >
-              Password
-            </AppText>
-            <View style={styles.passwordContainer}>
-              <TextInput
-                style={[
-                  styles.input,
-                  focusedField === 'password' && styles.inputFocused,
-                ]}
-                placeholder="Enter your password"
-                placeholderTextColor={colors.text.muted}
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                autoComplete="password"
-                onFocus={() => setFocusedField('password')}
-                onBlur={() => setFocusedField((prev) => (prev === 'password' ? null : prev))}
-              />
-              <TouchableOpacity
-                style={styles.passwordToggle}
-                onPress={() => setShowPassword((prev) => !prev)}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                  size={24}
-                  color={colors.text.secondary}
+            <View style={styles.form}>
+              <View style={styles.inputContainer}>
+                <AppText
+                  style={[
+                    styles.label,
+                    isRTL && styles.labelRTL,
+                    focusedField === 'id' && styles.labelFocused,
+                  ]}
+                >
+                  {t('login.nationalIdLabel')}
+                </AppText>
+                <TextInput
+                  style={[
+                    styles.input,
+                    nationalIdInputStyle,
+                    focusedField === 'id' && styles.inputFocused,
+                  ]}
+                  placeholder={t('login.nationalIdPlaceholder')}
+                  placeholderTextColor={colors.text.muted}
+                  value={email}
+                  onChangeText={handleNationalIdChange}
+                  keyboardType="number-pad"
+                  maxLength={10}
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  onFocus={() => setFocusedField('id')}
+                  onBlur={() => setFocusedField((prev) => (prev === 'id' ? null : prev))}
                 />
+              </View>
+
+              <View style={styles.inputContainer}>
+                <AppText
+                  style={[
+                    styles.label,
+                    isRTL && styles.labelRTL,
+                    focusedField === 'password' && styles.labelFocused,
+                  ]}
+                >
+                  {t('login.passwordLabel')}
+                </AppText>
+                <View style={styles.passwordContainer}>
+                  <TextInput
+                    style={[
+                      styles.input,
+                      inputDirectionStyle,
+                      isRTL
+                        ? { paddingLeft: PASSWORD_ICON_GUTTER, paddingRight: spacing.md }
+                        : { paddingRight: PASSWORD_ICON_GUTTER, paddingLeft: spacing.md },
+                      focusedField === 'password' && styles.inputFocused,
+                    ]}
+                    placeholder={t('login.passwordPlaceholder')}
+                    placeholderTextColor={colors.text.muted}
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry={!showPassword}
+                    autoCapitalize="none"
+                    autoComplete="password"
+                    onFocus={() => setFocusedField('password')}
+                    onBlur={() => setFocusedField((prev) => (prev === 'password' ? null : prev))}
+                  />
+                  <TouchableOpacity
+                    style={[styles.passwordToggle, isRTL ? styles.passwordToggleRTL : styles.passwordToggleLTR]}
+                    onPress={() => setShowPassword((prev) => !prev)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                      size={24}
+                      color={colors.text.secondary}
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={[styles.forgotPasswordLink, isRTL && styles.forgotPasswordLinkRTL]}
+                onPress={() => navigation.navigate('ForgotPassword', { role })}
+                activeOpacity={0.8}
+              >
+                <AppText style={[styles.forgotPasswordText, isRTL && styles.forgotPasswordTextRTL]}>
+                  {t('login.forgotPassword')}
+                </AppText>
+              </TouchableOpacity>
+
+              {error ? (
+                <AppText style={[styles.errorText, isRTL && styles.errorTextRTL]}>{error}</AppText>
+              ) : null}
+
+              {error && /verify|verification|تحقق|التحقق/i.test(error) && role === 'RegisteredUser' && email.trim().length > 0 ? (
+                <TouchableOpacity
+                  style={[styles.verifyAccountLink, isRTL && styles.verifyAccountLinkRTL]}
+                  onPress={() =>
+                    navigation.navigate('VerifyAccount', {
+                      role,
+                      nationalId: email.trim(),
+                    })
+                  }
+                  activeOpacity={0.8}
+                >
+                  <AppText style={[styles.verifyAccountText, isRTL && styles.verifyAccountTextRTL]}>
+                    {t('login.verifyCode')}
+                  </AppText>
+                </TouchableOpacity>
+              ) : null}
+
+              <AnimatedButton title={t('login.submit')} onPress={handleLogin} disabled={loading} loading={loading} />
+
+              <TouchableOpacity
+                style={styles.signUpLink}
+                onPress={() => navigation.navigate('SignUp', { role })}
+                activeOpacity={0.8}
+              >
+                <AppText style={[styles.signUpText, isRTL && styles.signUpPromptArabic]}>
+                  {t('login.signUpPrompt')}
+                </AppText>
               </TouchableOpacity>
             </View>
           </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
 
+      {/* Unified glass footer with partner logos */}
+      <AppFooter>
+        <View style={styles.logosContainer}>
           <TouchableOpacity
-            style={styles.forgotPasswordLink}
-            onPress={() => navigation.navigate('ForgotPassword', { role })}
-            activeOpacity={0.8}
+            style={styles.iauLogo}
+            onPress={() => Linking.openURL('https://www.iau.edu.sa/en/about-us')}
+            activeOpacity={0.7}
           >
-            <AppText style={styles.forgotPasswordText}>Forgot password?</AppText>
+            <Image
+              source={require('../../../assets/iau-university.png')}
+              style={styles.partnerLogoImage}
+              resizeMode="contain"
+            />
           </TouchableOpacity>
-
-          {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
-
-          <AnimatedButton
-            title="Login"
-            onPress={handleLogin}
-            disabled={loading}
-            loading={loading}
-          />
-
+          <View style={styles.logoDivider} />
           <TouchableOpacity
-            style={styles.signUpLink}
-            onPress={() => navigation.navigate('SignUp', { role })}
-            activeOpacity={0.8}
+            style={styles.vision2030Logo}
+            onPress={() => Linking.openURL('https://www.vision2030.gov.sa/en')}
+            activeOpacity={0.7}
           >
-            <AppText style={styles.signUpText}>
-              Don&apos;t have an account? Create one
-            </AppText>
+            <Image
+              source={require('../../../assets/2030-vision.png')}
+              style={styles.partnerLogoImage}
+              resizeMode="contain"
+            />
           </TouchableOpacity>
         </View>
-      </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-        
-        {/* Unified glass footer with partner logos */}
-        <AppFooter>
-          <View style={styles.logosContainer}>
-            <TouchableOpacity
-              style={styles.iauLogo}
-              onPress={() => Linking.openURL('https://www.iau.edu.sa/en/about-us')}
-              activeOpacity={0.7}
-            >
-              <Image
-                source={require('../../../assets/iau-university.png')}
-                style={styles.partnerLogoImage}
-                resizeMode="contain"
-              />
-            </TouchableOpacity>
-            <View style={styles.logoDivider} />
-            <TouchableOpacity
-              style={styles.vision2030Logo}
-              onPress={() => Linking.openURL('https://www.vision2030.gov.sa/en')}
-              activeOpacity={0.7}
-            >
-              <Image
-                source={require('../../../assets/2030-vision.png')}
-                style={styles.partnerLogoImage}
-                resizeMode="contain"
-              />
-            </TouchableOpacity>
-          </View>
-        </AppFooter>
-      </View>
+      </AppFooter>
+    </View>
     );
   };
 
@@ -290,6 +327,10 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'center',
     marginBottom: spacing.xl,
+    width: '100%',
+  },
+  headerRTL: {
+    alignItems: 'flex-end',
   },
   title: {
     fontSize: typography.sizes['4xl'],
@@ -307,6 +348,11 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: typography.sizes.lg,
     color: colors.text.secondary,
+    textAlign: 'center',
+    alignSelf: 'stretch',
+  },
+  loginHeaderTextArabic: {
+    ...(Platform.OS !== 'web' && { writingDirection: 'rtl' as const }),
   },
   form: {
     width: '100%',
@@ -320,12 +366,16 @@ const styles = StyleSheet.create({
     color: colors.logo.chambray,
     marginBottom: spacing.sm,
   },
+  labelRTL: {
+    textAlign: 'right',
+    alignSelf: 'stretch',
+  },
   input: {
     flex: 1,
     backgroundColor: colors.background.white,
     borderRadius: 12,
-    padding: spacing.md,
-    paddingRight: spacing.xl,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
     fontSize: typography.sizes.base,
     color: colors.text.dark,
     borderWidth: 1,
@@ -341,8 +391,28 @@ const styles = StyleSheet.create({
   errorText: {
     color: colors.status.error,
     fontSize: typography.sizes.sm,
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
     textAlign: 'center',
+  },
+  errorTextRTL: {
+    textAlign: 'right',
+    alignSelf: 'stretch',
+  },
+  verifyAccountLink: {
+    alignSelf: 'center',
+    marginBottom: spacing.md,
+  },
+  verifyAccountLinkRTL: {
+    alignSelf: 'flex-end',
+  },
+  verifyAccountText: {
+    color: colors.logo.chambray,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.semibold,
+    textDecorationLine: 'underline',
+  },
+  verifyAccountTextRTL: {
+    textAlign: 'right',
   },
   passwordContainer: {
     position: 'relative',
@@ -350,11 +420,17 @@ const styles = StyleSheet.create({
   },
   passwordToggle: {
     position: 'absolute',
-    right: spacing.md,
     top: 0,
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
+    width: 40,
+  },
+  passwordToggleLTR: {
+    right: spacing.md,
+  },
+  passwordToggleRTL: {
+    left: spacing.md,
   },
   passwordToggleIcon: {
     fontSize: typography.sizes.lg,
@@ -365,19 +441,31 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     alignSelf: 'flex-start',
   },
+  forgotPasswordLinkRTL: {
+    alignSelf: 'flex-end',
+  },
   forgotPasswordText: {
     color: colors.logo.emerald,
     fontSize: typography.sizes.sm,
     fontWeight: typography.weights.semibold,
   },
+  forgotPasswordTextRTL: {
+    textAlign: 'right',
+  },
   signUpLink: {
     marginTop: spacing.sm,
     alignItems: 'center',
+    alignSelf: 'center',
+    width: '100%',
   },
   signUpText: {
     color: colors.logo.chambray,
     fontSize: typography.sizes.sm,
     fontWeight: typography.weights.medium,
+    textAlign: 'center',
+  },
+  signUpPromptArabic: {
+    ...(Platform.OS !== 'web' && { writingDirection: 'rtl' as const }),
   },
   // Visual chrome for the footer now comes from shared AppFooter.
   footer: {

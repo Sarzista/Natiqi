@@ -17,7 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { LanguageSwitch } from '../LanguageSwitch';
 import { Logo } from '../Logo';
 import { AppText } from '../AppText';
-import { colors, spacing, typography } from '../../theme';
+import { colors, spacing, typography, gradientTextBgShiftKeyframes } from '../../theme';
 import { useLanguage } from '../../context/LanguageContext';
 
 const { width } = Dimensions.get('window');
@@ -83,7 +83,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   return (
     <View style={styles.container}>
       {/* Animated glass background overlay */}
-      <Animated.View pointerEvents="none" style={[styles.glassOverlay, shimmerStyle]}>
+      <Animated.View style={[styles.glassOverlay, shimmerStyle, { pointerEvents: 'none' }]}>
         <LinearGradient
           colors={[
             'rgba(0,166,81,0.20)',   // Aramco green tint
@@ -220,7 +220,10 @@ const styles = StyleSheet.create({
       WebkitBackgroundClip: 'text',
       WebkitTextFillColor: 'transparent',
       backgroundClip: 'text',
-      animation: 'gradient-shift 5s ease infinite',
+      animationKeyframes: gradientTextBgShiftKeyframes,
+      animationDuration: '5s',
+      animationTimingFunction: 'ease',
+      animationIterationCount: 'infinite',
     }),
   },
   headerSlogan: {
@@ -234,7 +237,10 @@ const styles = StyleSheet.create({
       WebkitBackgroundClip: 'text',
       WebkitTextFillColor: 'transparent',
       backgroundClip: 'text',
-      animation: 'gradient-shift 5s ease infinite',
+      animationKeyframes: gradientTextBgShiftKeyframes,
+      animationDuration: '5s',
+      animationTimingFunction: 'ease',
+      animationIterationCount: 'infinite',
     }),
   },
   rightSection: {

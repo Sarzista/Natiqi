@@ -29,6 +29,12 @@ const ThemeIcon: React.FC<{ size?: number; color?: string }> = ({
   <NightDaySvg width={size} height={size} fill={color} />
 );
 
+type WebPressableState = { pressed: boolean; hovered?: boolean };
+
+function pressableHovered(state: WebPressableState): boolean {
+  return Platform.OS === 'web' && Boolean(state.hovered);
+}
+
 export const LanguageSwitch: React.FC = () => {
   const { language, setLanguage } = useLanguage();
 
@@ -46,13 +52,17 @@ export const LanguageSwitch: React.FC = () => {
       {/* Language icon */}
       <Pressable
         onPress={handleLanguagePress}
-        style={({ hovered, pressed }) => [
-          styles.iconButton,
-          (hovered || pressed) && styles.iconButtonHovered,
-        ]}
+        style={(state) => {
+          const s = state as WebPressableState;
+          return [
+            styles.iconButton,
+            (pressableHovered(s) || s.pressed) && styles.iconButtonHovered,
+          ];
+        }}
       >
-        {({ hovered, pressed }) => {
-          const isActive = hovered || pressed;
+        {(state) => {
+          const s = state as WebPressableState;
+          const isActive = pressableHovered(s) || s.pressed;
           const baseColor =
             language === 'ar' ? colors.primary[600] : colors.logo.chambray;
           const color = isActive ? colors.primary[600] : baseColor;
@@ -69,13 +79,17 @@ export const LanguageSwitch: React.FC = () => {
       {/* Theme icon */}
       <Pressable
         onPress={handleThemePress}
-        style={({ hovered, pressed }) => [
-          styles.iconButton,
-          (hovered || pressed) && styles.iconButtonHovered,
-        ]}
+        style={(state) => {
+          const s = state as WebPressableState;
+          return [
+            styles.iconButton,
+            (pressableHovered(s) || s.pressed) && styles.iconButtonHovered,
+          ];
+        }}
       >
-        {({ hovered, pressed }) => {
-          const isActive = hovered || pressed;
+        {(state) => {
+          const s = state as WebPressableState;
+          const isActive = pressableHovered(s) || s.pressed;
           const color = isActive ? colors.primary[600] : colors.logo.chambray;
 
           return (

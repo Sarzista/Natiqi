@@ -1,0 +1,17 @@
+{
+  "task_type": "5_word_classification",
+  "model_type": "LinearSVM_Calibrated",
+  "decision_type": "trial_level_soft_vote",
+  "input_level": "window_features",
+  "output_level": "trial_prediction",
+  "n_classes": 5,
+  "class_names": [
+    "جوع",
+    "عطش",
+    "انذار",
+    "حمام",
+    "دواء"
+  ],
+  "feature_dim": 154,
+  "soft_vote_method": "mean_probabilities_across_windows"
+}

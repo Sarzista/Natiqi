@@ -9,6 +9,7 @@ keras
 numpy
 pandas
 scikit-learn
+scipy
 mne
 kymatio
 matplotlib

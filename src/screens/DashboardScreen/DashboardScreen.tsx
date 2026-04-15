@@ -36,17 +36,33 @@ import { PatientCard } from '../../components/PatientCard';
 import { AppText } from '../../components/AppText';
 import { Sidebar, type SidebarItemKey } from '../../components/Sidebar/Sidebar';
 import { useAuth } from '../../context/AuthContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { Logo } from '../../components/Logo/Logo';
 import { AnimatedGradient } from '../../components/AnimatedGradient';
 import { AppBackground } from '../../components/AppBackground';
+import { CalendarDateField } from '../../components/CalendarDateField';
 import { EegMiniChart } from '../../components/EegMiniChart';
 import { Patient, UserRole } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { colors, spacing, typography } from '../../theme';
 import { getPatients, addPatient, deletePatient } from '../../services/patientService';
 import { getUsers, addUser, deleteUser } from '../../services/userService';
+import { fetchCurrentModel, saveCurrentModel } from '../../services/modelAdminService';
+import { predictEegWindow, type EegPredictWindowResponse } from '../../services/eegModelService';
+import { fetchModelArtifactStatus, type ModelArtifactStatus } from '../../services/modelArtifactService';
+import { fetchSpecialistSessions, createEegSessionFromWindow, type EegSessionRow } from '../../services/sessionService';
+import {
+  fetchPatientSettings,
+  savePatientSettings,
+  changePatientPassword,
+  patientSessionsExportUrl,
+  type PatientSettings,
+} from '../../services/patientSettingsService';
+import { API_BASE } from '../../config/apiBase';
 const { width, height } = Dimensions.get('window');
 const isSmallScreen = width < 960;
+/** Match Landing hero brand text alignment (center vs start/end). */
+const isNarrowHeaderBrand = width < 600;
 const HEADER_HEIGHT_WEB = 80;
 const SIDEBAR_BASE_WIDTH = isSmallScreen ? 220 : 260;
 
@@ -82,6 +98,21 @@ const INITIAL_ADMIN_SETTINGS: AdminSettingsState = {
   autoBackup: true,
 };
 
+/** Specialist-only clinical prefs (UI state until a clinician settings API exists). */
+type SpecialistMedicalSettingsState = {
+  emailNotifications: boolean;
+  sessionSummaryAlerts: boolean;
+  lowAccuracyWarning: boolean;
+  criticalPatientAlerts: boolean;
+};
+
+const INITIAL_SPECIALIST_MEDICAL_SETTINGS: SpecialistMedicalSettingsState = {
+  emailNotifications: true,
+  sessionSummaryAlerts: true,
+  lowAccuracyWarning: true,
+  criticalPatientAlerts: true,
+};
+
 const MenuBurgerIcon: React.FC<{ size?: number; color?: string }> = ({
   size = 24,
   color = colors.text.primary,
@@ -111,6 +142,7 @@ type DashboardScreenNavigationProp = NativeStackNavigationProp<RootStackParamLis
 export const DashboardScreen: React.FC = () => {
   const navigation = useNavigation<DashboardScreenNavigationProp>();
   const { user } = useAuth();
+  const { t, isRTL } = useLanguage();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -127,15 +159,57 @@ export const DashboardScreen: React.FC = () => {
   const [newUserMessage, setNewUserMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [adminUsers, setAdminUsers] = useState<any[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
+  const [modelFormName, setModelFormName] = useState('');
+  const [modelFormVersion, setModelFormVersion] = useState('');
+  const [modelFormTrainingDate, setModelFormTrainingDate] = useState('');
+  const [modelFormLoading, setModelFormLoading] = useState(false);
+  const [modelFormSaving, setModelFormSaving] = useState(false);
+  const [modelFormMessage, setModelFormMessage] = useState<{
+    type: 'error' | 'success';
+    text: string;
+  } | null>(null);
   const [adminSettings, setAdminSettings] = useState<AdminSettingsState>(INITIAL_ADMIN_SETTINGS);
+  const [specialistMedicalSettings, setSpecialistMedicalSettings] =
+    useState<SpecialistMedicalSettingsState>(INITIAL_SPECIALIST_MEDICAL_SETTINGS);
   const [specPatients, setSpecPatients] = useState<any[]>([]);
   const [patientsLoading, setPatientsLoading] = useState(false);
   const [showAddPatientForm, setShowAddPatientForm] = useState(false);
+  const [newPatientRoom, setNewPatientRoom] = useState('');
   const [newPatientName, setNewPatientName] = useState('');
   const [newPatientNationalId, setNewPatientNationalId] = useState('');
   const [newPatientDob, setNewPatientDob] = useState('');
   const [newPatientGender, setNewPatientGender] = useState<'Male' | 'Female'>('Female');
   const [newPatientMessage, setNewPatientMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // ── EEG model inference (Patient/RegisteredUser dashboard) ──
+  const [eegPredictLoading, setEegPredictLoading] = useState(false);
+  const [eegPredictError, setEegPredictError] = useState<string | null>(null);
+  const [eegPredictResult, setEegPredictResult] = useState<EegPredictWindowResponse | null>(null);
+
+  // ── Admin model artifact status + test inference ──
+  const [modelArtifact, setModelArtifact] = useState<ModelArtifactStatus | null>(null);
+  const [modelArtifactLoading, setModelArtifactLoading] = useState(false);
+  const [adminModelTestLoading, setAdminModelTestLoading] = useState(false);
+  const [adminModelTestError, setAdminModelTestError] = useState<string | null>(null);
+  const [adminModelTestResult, setAdminModelTestResult] = useState<EegPredictWindowResponse | null>(null);
+
+  // ── Specialist sessions (real DB rows) ──
+  const [specSessions, setSpecSessions] = useState<EegSessionRow[]>([]);
+  const [specSessionsLoading, setSpecSessionsLoading] = useState(false);
+  const [specSessionsError, setSpecSessionsError] = useState<string | null>(null);
+  const [createSessionLoading, setCreateSessionLoading] = useState(false);
+
+  // ── Patient settings (persisted) ──
+  const [patientSettings, setPatientSettings] = useState<PatientSettings | null>(null);
+  const [patientSettingsLoading, setPatientSettingsLoading] = useState(false);
+  const [patientSettingsSaving, setPatientSettingsSaving] = useState(false);
+  const [patientSettingsMessage, setPatientSettingsMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // Change password form (patient)
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   // ── Edit User (Admin) ──
   const [editingUser, setEditingUser] = useState<any | null>(null);
@@ -145,6 +219,7 @@ export const DashboardScreen: React.FC = () => {
 
   // ── Edit Patient (Specialist) ──
   const [editingPatient, setEditingPatient] = useState<any | null>(null);
+  const [editPatientRoom, setEditPatientRoom] = useState('');
   const [editPatientName, setEditPatientName] = useState('');
   const [editPatientDob, setEditPatientDob] = useState('');
   const [editPatientGender, setEditPatientGender] = useState<'Male' | 'Female'>('Female');
@@ -215,19 +290,21 @@ export const DashboardScreen: React.FC = () => {
     }
 
     try {
-      await addUser({
-        national_id:       trimmedNationalId,
-        name:              trimmedName,
-        email:             trimmedEmail,
-        role:              newUserRole,
-        gender:            newUserGender,
-        performed_by_name: user?.name ?? 'Admin',   // ← add
-        performed_by_id:   user?.id   ?? 'unknown', // ← add
+      const result = await addUser({
+        national_id: trimmedNationalId,
+        name: trimmedName,
+        email: trimmedEmail,
+        role: newUserRole,
+        gender: newUserGender,
+        performed_by_name: user?.name ?? 'Admin',
+        performed_by_id: user?.id ?? 'unknown',
       });
-      // Refresh list from DB
       const updated = await getUsers();
       setAdminUsers(updated);
-      setNewUserMessage({ type: 'success', text: 'User added successfully.' });
+      setNewUserMessage({
+        type: 'success',
+        text: `User added. Temporary password: ${result.temp_password} — share it securely; ask them to sign in and change it.`,
+      });
       resetAddUserForm();
     } catch (err: any) {
       setNewUserMessage({ type: 'error', text: err.message });
@@ -241,6 +318,7 @@ export const DashboardScreen: React.FC = () => {
   };
 
   const resetAddPatientForm = () => {
+    setNewPatientRoom('');
     setNewPatientName('');
     setNewPatientNationalId('');
     setNewPatientDob('');
@@ -272,7 +350,7 @@ export const DashboardScreen: React.FC = () => {
       return;
     }
     try {
-      const res = await fetch(`http://localhost:5000/admin/users/${editingUser.nationalId}`, {
+      const res = await fetch(`${API_BASE}/admin/users/${editingUser.nationalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -304,7 +382,7 @@ export const DashboardScreen: React.FC = () => {
     }
 
     try {
-      const res = await fetch('http://localhost:5000/profile/update', {
+      const res = await fetch(`${API_BASE}/profile/update`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -323,8 +401,70 @@ export const DashboardScreen: React.FC = () => {
     }
   };
 
+  const patchPatientSettings = <K extends keyof PatientSettings>(key: K, value: PatientSettings[K]) => {
+    setPatientSettings((prev) => (prev ? { ...prev, [key]: value } : prev));
+  };
+
+  const handleSavePatientSettings = async () => {
+    if (!user?.id || !patientSettings) return;
+    setPatientSettingsMessage(null);
+    setPatientSettingsSaving(true);
+    try {
+      const saved = await savePatientSettings({
+        national_id: String(user.id),
+        notify_hunger: patientSettings.notify_hunger,
+        notify_thirst: patientSettings.notify_thirst,
+        notify_alarm: patientSettings.notify_alarm,
+        notify_bathroom: patientSettings.notify_bathroom,
+        notify_medicine: patientSettings.notify_medicine,
+        min_confidence: patientSettings.min_confidence,
+        require_consecutive: patientSettings.require_consecutive,
+        calibration_enabled: patientSettings.calibration_enabled,
+        text_size: patientSettings.text_size,
+        high_contrast: patientSettings.high_contrast,
+        data_retention_days: patientSettings.data_retention_days,
+        preferred_device: patientSettings.preferred_device,
+      });
+      setPatientSettings(saved);
+      setPatientSettingsMessage({ type: 'success', text: 'Settings saved.' });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to save settings';
+      setPatientSettingsMessage({ type: 'error', text: msg });
+    } finally {
+      setPatientSettingsSaving(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!user?.id) return;
+    setPasswordMessage(null);
+    if (!currentPassword || !newPassword) {
+      setPasswordMessage({ type: 'error', text: 'Enter your current password and a new password.' });
+      return;
+    }
+    setPasswordSaving(true);
+    try {
+      await changePatientPassword({
+        national_id: String(user.id),
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setCurrentPassword('');
+      setNewPassword('');
+      setPasswordMessage({ type: 'success', text: 'Password updated.' });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to change password';
+      setPasswordMessage({ type: 'error', text: msg });
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
+
   const openEditPatient = (patient: any) => {
     setEditingPatient(patient);
+    setEditPatientRoom(
+      String(patient.roomNumber ?? patient.room_number ?? '').trim(),
+    );
     setEditPatientName(patient.name);
     setEditPatientDob(patient.dob);
     setEditPatientGender(patient.gender === 'Male' ? 'Male' : 'Female');
@@ -333,8 +473,13 @@ export const DashboardScreen: React.FC = () => {
   };
 
   const handleSavePatient = async () => {
-    if (!editPatientName.trim() || !editPatientDob.trim()) {
-      setEditPatientMessage({ type: 'error', text: 'Name and DOB are required.' });
+    const room = editPatientRoom.trim();
+    if (!room || !editPatientName.trim() || !editPatientDob.trim()) {
+      setEditPatientMessage({ type: 'error', text: 'Room number, name, and DOB are required.' });
+      return;
+    }
+    if (room.length > 10) {
+      setEditPatientMessage({ type: 'error', text: 'Room number must be at most 10 characters.' });
       return;
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(editPatientDob.trim())) {
@@ -342,10 +487,11 @@ export const DashboardScreen: React.FC = () => {
       return;
     }
     try {
-      const res = await fetch(`http://localhost:5000/specialist/patients/${editingPatient.nationalId}`, {
+      const res = await fetch(`${API_BASE}/specialist/patients/${editingPatient.nationalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          room_number:       room,
           name:              editPatientName.trim(),
           dob:               editPatientDob.trim(),
           gender:            editPatientGender,
@@ -355,7 +501,19 @@ export const DashboardScreen: React.FC = () => {
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Update failed');
-      setSpecPatients(prev => prev.map(p => p.nationalId === editingPatient.nationalId ? { ...p, name: editPatientName.trim(), dob: editPatientDob.trim(), gender: editPatientGender } : p));
+      setSpecPatients(prev =>
+        prev.map(p =>
+          p.nationalId === editingPatient.nationalId
+            ? {
+                ...p,
+                roomNumber: room,
+                name: editPatientName.trim(),
+                dob: editPatientDob.trim(),
+                gender: editPatientGender,
+              }
+            : p,
+        ),
+      );
       setEditPatientMessage({ type: 'success', text: 'Patient updated successfully.' });
       setTimeout(() => setEditingPatient(null), 1000);
     } catch (err: any) {
@@ -364,14 +522,24 @@ export const DashboardScreen: React.FC = () => {
   };
 
 const handleAddPatient = async () => {
+    const room       = newPatientRoom.trim();
     const name       = newPatientName.trim();
     const nationalId = newPatientNationalId.trim();
     const dob        = newPatientDob.trim();
     setNewPatientMessage(null);
 
-    // Frontend validation (same as before)
-    if (!name || !nationalId || !dob) {
-      setNewPatientMessage({ type: 'error', text: 'Name, National ID, and DOB are required.' });
+    if (!room || !name || !nationalId || !dob) {
+      setNewPatientMessage({
+        type: 'error',
+        text: 'Room number, name, National ID, and DOB are required.',
+      });
+      return;
+    }
+    if (room.length > 10) {
+      setNewPatientMessage({
+        type: 'error',
+        text: 'Room number must be at most 10 characters.',
+      });
       return;
     }
     if (!/^\d{10}$/.test(nationalId)) {
@@ -386,6 +554,7 @@ const handleAddPatient = async () => {
     try {
       await addPatient({
         national_id:       nationalId,
+        room_number:       room,
         name:              name,
         dob:               dob,
         gender:            newPatientGender,
@@ -394,8 +563,7 @@ const handleAddPatient = async () => {
         performed_by_id:   user?.id   ?? 'unknown',
       });
 
-      // Refresh list from DB
-      const updated = await getPatients();
+      const updated = await getPatients(user?.id);
       setSpecPatients(updated);
       setNewPatientMessage({ type: 'success', text: 'Patient added successfully.' });
       resetAddPatientForm();
@@ -412,6 +580,13 @@ const handleAddPatient = async () => {
     setAdminSettings((prev) => ({ ...prev, [key]: value }));
   };
 
+  const setSpecialistMedicalBoolean = <K extends keyof SpecialistMedicalSettingsState>(
+    key: K,
+    value: SpecialistMedicalSettingsState[K],
+  ) => {
+    setSpecialistMedicalSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
   const handleNumericSettingChange = (
     key: 'sessionTimeoutMinutes' | 'passwordExpiryDays' | 'dataRetentionDays'
   ) => (text: string) => {
@@ -426,11 +601,11 @@ const handleAddPatient = async () => {
     'Monthly',
   ];
   const genderOptions: Array<'Male' | 'Female'> = ['Male', 'Female'];
-  const roleOptions: Array<'Admin' | 'Specialist' > = ['Admin', 'Specialist'];
+  const roleOptions: Array<'Admin' | 'Specialist'> = ['Admin', 'Specialist'];
 
   const role: UserRole = user?.role ?? 'RegisteredUser';
   const isAdmin = role === 'admin';
-  const isPatient = role === 'RegisteredUser';
+  const isPatient = role === 'RegisteredUser' || role === ('patient' as any) || role === ('Patient' as any);
   const roleLabel = isPatient ? 'Patient' : isAdmin ? 'Admin' : 'Clinician';
 
 
@@ -446,6 +621,34 @@ const handleAddPatient = async () => {
   }, [isAdmin, activeSidebarItem]);
 
   useEffect(() => {
+    if (!isAdmin || activeSidebarItem !== 'admin-models') return;
+    setModelFormLoading(true);
+    setModelFormMessage(null);
+    fetchCurrentModel()
+      .then((d) => {
+        setModelFormName(d.model_name || '');
+        setModelFormVersion(d.model_version || '');
+        setModelFormTrainingDate(d.training_date || '');
+      })
+      .catch((e: Error) =>
+        setModelFormMessage({ type: 'error', text: e.message || 'Could not load model info' }),
+      )
+      .finally(() => setModelFormLoading(false));
+  }, [isAdmin, activeSidebarItem]);
+
+  useEffect(() => {
+    if (!isAdmin || activeSidebarItem !== 'admin-models') return;
+    setModelArtifactLoading(true);
+    fetchModelArtifactStatus()
+      .then(setModelArtifact)
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : 'Failed to load model artifact status';
+        setModelArtifact({ pkl_exists: false, pkl_path: '', pkl_size_bytes: 0, pkl_modified_at: '', config: {}, metadata: {}, read_error: msg });
+      })
+      .finally(() => setModelArtifactLoading(false));
+  }, [isAdmin, activeSidebarItem]);
+
+  useEffect(() => {
     if (role === 'specialist' && activeSidebarItem === 'spec-patients') {
       setPatientsLoading(true);
       getPatients(user?.id)
@@ -456,14 +659,68 @@ const handleAddPatient = async () => {
   }, [role, activeSidebarItem]);
 
   useEffect(() => {
+    if (role !== 'specialist' || activeSidebarItem !== 'spec-sessions') return;
+    setSpecSessionsLoading(true);
+    setSpecSessionsError(null);
+    fetchSpecialistSessions({ specialist_id: user?.id ?? '', limit: 100 })
+      .then(setSpecSessions)
+      .catch((e: unknown) => setSpecSessionsError(e instanceof Error ? e.message : 'Failed to load sessions'))
+      .finally(() => setSpecSessionsLoading(false));
+  }, [role, activeSidebarItem, user?.id]);
+
+  useEffect(() => {
     if (isAdmin && activeSidebarItem === 'admin-logs') {
-      fetch('http://localhost:5000/admin/system-logs')
+      fetch(`${API_BASE}/admin/system-logs`)
         .then(res => res.json())
         .then(setSystemLogs)
         .catch(console.error);
     }
   }, [isAdmin, activeSidebarItem]);
 
+  useEffect(() => {
+    if (!isPatient || activeSidebarItem !== 'rec-settings') return;
+    if (!user?.id) return;
+    setPatientSettingsLoading(true);
+    setPatientSettingsMessage(null);
+    fetchPatientSettings(String(user.id))
+      .then(setPatientSettings)
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : 'Failed to load settings';
+        setPatientSettingsMessage({ type: 'error', text: msg });
+      })
+      .finally(() => setPatientSettingsLoading(false));
+  }, [isPatient, activeSidebarItem, user?.id]);
+
+  const handleSaveModelInfo = async () => {
+    const name = modelFormName.trim();
+    const version = modelFormVersion.trim();
+    const td = modelFormTrainingDate.trim();
+    setModelFormMessage(null);
+    if (!name || !version || !td) {
+      setModelFormMessage({ type: 'error', text: 'All fields are required.' });
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(td) || Number.isNaN(Date.parse(`${td}T12:00:00`))) {
+      setModelFormMessage({ type: 'error', text: 'Training date must be YYYY-MM-DD.' });
+      return;
+    }
+    setModelFormSaving(true);
+    try {
+      await saveCurrentModel({
+        model_name: name,
+        model_version: version,
+        training_date: td,
+        performed_by_id: user?.id ?? '',
+        performed_by_name: user?.name ?? 'Admin',
+      });
+      setModelFormMessage({ type: 'success', text: 'Model information saved.' });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Save failed';
+      setModelFormMessage({ type: 'error', text: msg });
+    } finally {
+      setModelFormSaving(false);
+    }
+  };
 
   const adminStats = [
     {
@@ -518,8 +775,8 @@ const handleAddPatient = async () => {
     {
       key: 'model-version',
       label: 'Model Version',
-      value: 'v2.3.1',
-      sub: 'CNN-BiLSTM',
+      value: modelFormVersion.trim() || '—',
+      sub: modelFormName.trim() || 'Not set',
       icon: 'hardware-chip-outline' as const,
     },
   ];
@@ -571,11 +828,83 @@ const handleAddPatient = async () => {
   } = {
     status: 'Connected',
     timer: '00:12:45',
-    detectedWord: 'ماء',
-    detectedWordEn: '(Water)',
-    confidenceWidth: '92%' as DimensionValue,
-    confidenceLabel: '92%',
+    detectedWord: eegPredictResult?.predicted_word_ar || '—',
+    detectedWordEn: '',
+    confidenceWidth: `${Math.round((eegPredictResult?.confidence ?? 0) * 100)}%` as DimensionValue,
+    confidenceLabel: eegPredictResult
+      ? `${Math.round(eegPredictResult.confidence * 100)}%`
+      : '—',
     alert: 'Critical: Pain detected',
+  };
+
+  const buildDemoWindow14x128 = (): number[][] => {
+    // Demo-only: deterministic pseudo-signal. Replace once device capture exists.
+    const out: number[][] = [];
+    for (let ch = 0; ch < 14; ch++) {
+      const arr: number[] = [];
+      for (let i = 0; i < 128; i++) {
+        const t = i / 128;
+        arr.push(Math.sin(2 * Math.PI * (4 + ch * 0.2) * t) + 0.05 * Math.cos(2 * Math.PI * 20 * t));
+      }
+      out.push(arr);
+    }
+    return out;
+  };
+
+  const handleRunEegInference = async () => {
+    setEegPredictError(null);
+    setEegPredictLoading(true);
+    try {
+      const win = buildDemoWindow14x128();
+      const res = await predictEegWindow(win);
+      setEegPredictResult(res);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Inference failed';
+      setEegPredictError(msg);
+    } finally {
+      setEegPredictLoading(false);
+    }
+  };
+
+  const handleAdminRunModelTest = async () => {
+    setAdminModelTestError(null);
+    setAdminModelTestLoading(true);
+    try {
+      const win = buildDemoWindow14x128();
+      const res = await predictEegWindow(win);
+      setAdminModelTestResult(res);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Inference failed';
+      setAdminModelTestError(msg);
+    } finally {
+      setAdminModelTestLoading(false);
+    }
+  };
+
+  const handleSpecCreateSessionFromInference = async () => {
+    if (!user?.id) return;
+    const firstPatient = specPatients?.[0]?.nationalId;
+    if (!firstPatient) {
+      setSpecSessionsError('Add/assign at least one patient first to create a session.');
+      return;
+    }
+    setCreateSessionLoading(true);
+    setSpecSessionsError(null);
+    try {
+      const win = buildDemoWindow14x128();
+      await createEegSessionFromWindow({
+        patient_national_id: String(firstPatient),
+        specialist_national_id: String(user.id),
+        window: win,
+        device: 'EPOC X',
+      });
+      const refreshed = await fetchSpecialistSessions({ specialist_id: user?.id ?? '', limit: 100 });
+      setSpecSessions(refreshed);
+    } catch (e: unknown) {
+      setSpecSessionsError(e instanceof Error ? e.message : 'Failed to create session');
+    } finally {
+      setCreateSessionLoading(false);
+    }
   };
 
   const recTopStats = [
@@ -736,7 +1065,8 @@ const handleAddPatient = async () => {
                   <View>
                     <AppText style={styles.adminTableTitle}>Add New User</AppText>
                     <AppText style={styles.adminTableSubtitle}>
-                      Capture required account details
+                      After creation, the success message includes the temporary password. Gender is stored on
+                      the account.
                     </AppText>
                   </View>
                   <TouchableOpacity style={styles.adminGhostButton} onPress={handleCancelAddUser}>
@@ -812,6 +1142,7 @@ const handleAddPatient = async () => {
                         );
                       })}
                     </View>
+                    <AppText style={styles.recFormHelper}>Saved on this account.</AppText>
                   </View>
                 </View>
 
@@ -942,6 +1273,7 @@ const handleAddPatient = async () => {
               <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Name</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Email</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Role</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColGender]}>Gender</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Status</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Actions</AppText>
             </View>
@@ -959,6 +1291,9 @@ const handleAddPatient = async () => {
                 </AppText>
                 <AppText style={[styles.adminTableCell, styles.adminColMedium]}>
                   {userRow.role}
+                </AppText>
+                <AppText style={[styles.adminTableCell, styles.adminColGender]}>
+                  {userRow.gender || '—'}
                 </AppText>
                 <View style={styles.adminColSmall}>
                   <View
@@ -1022,29 +1357,142 @@ const handleAddPatient = async () => {
             <View style={styles.modelHalfCard}>
               <View style={styles.adminTableHeader}>
                 <View>
-                  <AppText style={styles.adminTableTitle}>Data Configuration</AppText>
+                  <AppText style={styles.adminTableTitle}>Deployed model</AppText>
                   <AppText style={styles.adminTableSubtitle}>
-                    Upload EEG datasets and select architecture
+                    Record the production decoder: display name, version, and when it was last trained.
                   </AppText>
                 </View>
               </View>
 
-              <View style={styles.modelField}>
-                <AppText style={styles.modelFieldLabel}>EEG Dataset</AppText>
-                <View style={styles.modelFieldControl}>
-                  <AppText style={styles.modelFieldValue}>Choose file</AppText>
-                  <Ionicons name="cloud-upload-outline" size={18} color={colors.text.secondary} />
-                </View>
-                <AppText style={styles.modelFieldHint}>Upload CSV with EEG channel data</AppText>
+              <View style={{ marginBottom: spacing.md }}>
+                <AppText style={styles.recPanelTitle}>Model artifact</AppText>
+                {modelArtifactLoading ? (
+                  <AppText style={styles.modelFieldHint}>Checking Saved_Model…</AppText>
+                ) : modelArtifact ? (
+                  <>
+                    <AppText style={styles.recFormHelper}>
+                      File: {modelArtifact.pkl_exists ? 'Found' : 'Missing'}
+                    </AppText>
+                    {modelArtifact.pkl_exists ? (
+                      <>
+                        <AppText style={styles.recFormHelper}>Path: {modelArtifact.pkl_path}</AppText>
+                        <AppText style={styles.recFormHelper}>
+                          Size: {Math.round(modelArtifact.pkl_size_bytes / 1024)} KB • Updated: {modelArtifact.pkl_modified_at || '—'}
+                        </AppText>
+                      </>
+                    ) : null}
+                    {modelArtifact.read_error ? (
+                      <AppText style={[styles.recFormHelper, { color: colors.status.error }]}>
+                        {modelArtifact.read_error}
+                      </AppText>
+                    ) : null}
+                    {modelArtifact?.config?.class_names ? (
+                      <AppText style={styles.recFormHelper}>
+                        Classes: {(modelArtifact.config.class_names as string[]).join(' • ')}
+                      </AppText>
+                    ) : null}
+                  </>
+                ) : null}
               </View>
 
-              <View style={styles.modelField}>
-                <AppText style={styles.modelFieldLabel}>Model Architecture</AppText>
-                <View style={styles.modelFieldControl}>
-                  <AppText style={styles.modelFieldValue}>Hybrid CNN-BiLSTM</AppText>
-                  <Ionicons name="chevron-down-outline" size={18} color={colors.text.secondary} />
-                </View>
-              </View>
+              {modelFormLoading ? (
+                <AppText style={styles.modelFieldHint}>Loading…</AppText>
+              ) : (
+                <>
+                  <View style={styles.modelInfoField}>
+                    <AppText style={styles.recFormLabel}>Current model name</AppText>
+                    <TextInput
+                      value={modelFormName}
+                      onChangeText={setModelFormName}
+                      placeholder="e.g. Hybrid CNN-BiLSTM"
+                      placeholderTextColor={colors.text.secondary}
+                      style={styles.recFormInput}
+                      editable={!modelFormSaving}
+                    />
+                  </View>
+                  <View style={styles.modelInfoField}>
+                    <AppText style={styles.recFormLabel}>Version</AppText>
+                    <TextInput
+                      value={modelFormVersion}
+                      onChangeText={setModelFormVersion}
+                      placeholder="e.g. v2.3.1"
+                      placeholderTextColor={colors.text.secondary}
+                      style={styles.recFormInput}
+                      editable={!modelFormSaving}
+                    />
+                  </View>
+                  <CalendarDateField
+                    label="Training date"
+                    value={modelFormTrainingDate}
+                    onChange={setModelFormTrainingDate}
+                    disabled={modelFormSaving}
+                    hint={
+                      Platform.OS === 'web'
+                        ? 'Use the calendar control to pick a date.'
+                        : 'Tap the row to open the calendar.'
+                    }
+                  />
+                  {modelFormMessage ? (
+                    <View
+                      style={[
+                        styles.adminFormMessage,
+                        modelFormMessage.type === 'error'
+                          ? styles.adminFormMessageError
+                          : styles.adminFormMessageSuccess,
+                      ]}
+                    >
+                      <AppText style={styles.adminFormMessageText}>{modelFormMessage.text}</AppText>
+                    </View>
+                  ) : null}
+                  <TouchableOpacity
+                    style={[
+                      styles.adminPrimaryButton,
+                      { marginTop: spacing.md },
+                      modelFormSaving && { opacity: 0.7 },
+                    ]}
+                    onPress={handleSaveModelInfo}
+                    disabled={modelFormSaving}
+                  >
+                    <Ionicons name="save-outline" size={18} color={colors.text.white} />
+                    <AppText style={styles.adminPrimaryButtonText}>
+                      {modelFormSaving ? 'Saving…' : 'Save model info'}
+                    </AppText>
+                  </TouchableOpacity>
+
+                  <View style={{ marginTop: spacing.lg }}>
+                    <AppText style={styles.recPanelTitle}>Quick inference test</AppText>
+                    <AppText style={styles.recFormHelper}>
+                      Sends a demo 14×128 window to `POST /ml/predict-window` and displays the result.
+                    </AppText>
+                    {adminModelTestError ? (
+                      <AppText style={[styles.recFormHelper, { color: colors.status.error }]}>
+                        {adminModelTestError}
+                      </AppText>
+                    ) : null}
+                    <TouchableOpacity
+                      style={[
+                        styles.adminPrimaryButton,
+                        { marginTop: spacing.md },
+                        adminModelTestLoading && { opacity: 0.7 },
+                      ]}
+                      onPress={handleAdminRunModelTest}
+                      disabled={adminModelTestLoading}
+                    >
+                      <Ionicons name="hardware-chip-outline" size={18} color={colors.text.white} />
+                      <AppText style={styles.adminPrimaryButtonText}>
+                        {adminModelTestLoading ? 'Running…' : 'Run test inference'}
+                      </AppText>
+                    </TouchableOpacity>
+                    {adminModelTestResult ? (
+                      <View style={{ marginTop: spacing.md }}>
+                        <AppText style={styles.recFormHelper}>
+                          Predicted: {adminModelTestResult.predicted_word_ar} • {Math.round(adminModelTestResult.confidence * 100)}%
+                        </AppText>
+                      </View>
+                    ) : null}
+                  </View>
+                </>
+              )}
             </View>
 
             <View style={styles.modelHalfCard}>
@@ -1662,7 +2110,21 @@ const handleAddPatient = async () => {
 
                 <View style={styles.adminFormGrid}>
                   <View style={styles.adminFormField}>
-                    <AppText style={styles.recFormLabel}>Patient Name</AppText>
+                    <AppText style={styles.recFormLabel}>Room number</AppText>
+                    <TextInput
+                      value={newPatientRoom}
+                      onChangeText={setNewPatientRoom}
+                      placeholder="e.g. 1204"
+                      placeholderTextColor={colors.text.secondary}
+                      autoCapitalize="characters"
+                      maxLength={10}
+                      style={styles.recFormInput}
+                    />
+                    <AppText style={styles.recFormHelper}>Unique ward or room ID (max 10 characters).</AppText>
+                  </View>
+
+                  <View style={styles.adminFormField}>
+                    <AppText style={styles.recFormLabel}>Patient name</AppText>
                     <TextInput
                       value={newPatientName}
                       onChangeText={setNewPatientName}
@@ -1672,7 +2134,9 @@ const handleAddPatient = async () => {
                     />
                     <AppText style={styles.recFormHelper}>Required input.</AppText>
                   </View>
+                </View>
 
+                <View style={styles.adminFormGrid}>
                   <View style={styles.adminFormField}>
                     <AppText style={styles.recFormLabel}>National ID</AppText>
                     <TextInput
@@ -1686,9 +2150,7 @@ const handleAddPatient = async () => {
                     />
                     <AppText style={styles.recFormHelper}>Required 10 digits.</AppText>
                   </View>
-                </View>
 
-                <View style={styles.adminFormGrid}>
                   <View style={styles.adminFormField}>
                     <AppText style={styles.recFormLabel}>Date of Birth</AppText>
                     <TextInput
@@ -1771,7 +2233,7 @@ const handleAddPatient = async () => {
 
                 <View style={styles.adminFormActions}>
                   <AppText style={styles.recFormHelper}>
-                    Required: name, National ID, DOB, gender. Role/device/status are auto.
+                    Required: room number, name, National ID, DOB, gender. Role/device/status are auto.
                   </AppText>
                   <View style={styles.adminFormActionsRow}>
                     <TouchableOpacity style={styles.adminGhostButton} onPress={handleCancelAddPatient}>
@@ -1788,21 +2250,24 @@ const handleAddPatient = async () => {
             )}
 
             <View style={styles.adminTableHeadRow}>
-              <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>National ID</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Name</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>DOB</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Gender</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Device</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Status</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Actions</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColNarrow, styles.adminColPatientShrink]}>Room</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColNationalId]}>National ID</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColPatientName]}>Name</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColMedium, styles.adminColPatientShrink]}>DOB</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColSmall, styles.adminColPatientShrink]}>Gender</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColPatientDevice]}>Device</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColSmall, styles.adminColPatientShrink]}>Status</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColPatientActions, styles.adminTableHeadRight]}>Actions</AppText>
             </View>
 
-{editingPatient && (
+            {editingPatient && (
               <View style={[styles.adminTableCard, styles.recGlassCard, styles.adminFormCard]}>
                 <View style={styles.adminFormHeader}>
                   <View>
                     <AppText style={styles.adminTableTitle}>Edit Patient</AppText>
-                    <AppText style={styles.adminTableSubtitle}>Editing: {editingPatient.name}</AppText>
+                    <AppText style={styles.adminTableSubtitle}>
+                      {editingPatient.name} · ID {editingPatient.nationalId}
+                    </AppText>
                   </View>
                   <TouchableOpacity style={styles.adminGhostButton} onPress={() => setEditingPatient(null)}>
                     <Ionicons name="close" size={18} color={colors.text.primary} />
@@ -1811,9 +2276,24 @@ const handleAddPatient = async () => {
                 </View>
                 <View style={styles.adminFormGrid}>
                   <View style={styles.adminFormField}>
-                    <AppText style={styles.recFormLabel}>Patient Name</AppText>
+                    <AppText style={styles.recFormLabel}>Room number</AppText>
+                    <TextInput
+                      value={editPatientRoom}
+                      onChangeText={setEditPatientRoom}
+                      placeholder="Room or ward ID"
+                      placeholderTextColor={colors.text.secondary}
+                      autoCapitalize="characters"
+                      maxLength={10}
+                      style={styles.recFormInput}
+                    />
+                    <AppText style={styles.recFormHelper}>Must stay unique across patients.</AppText>
+                  </View>
+                  <View style={styles.adminFormField}>
+                    <AppText style={styles.recFormLabel}>Patient name</AppText>
                     <TextInput value={editPatientName} onChangeText={setEditPatientName} placeholder="Full name" placeholderTextColor={colors.text.secondary} style={styles.recFormInput} />
                   </View>
+                </View>
+                <View style={styles.adminFormGrid}>
                   <View style={styles.adminFormField}>
                     <AppText style={styles.recFormLabel}>Date of Birth</AppText>
                     <TextInput value={editPatientDob} onChangeText={setEditPatientDob} placeholder="YYYY-MM-DD" placeholderTextColor={colors.text.secondary} style={styles.recFormInput} />
@@ -1838,7 +2318,7 @@ const handleAddPatient = async () => {
                   </View>
                 )}
                 <View style={styles.adminFormActions}>
-                  <AppText style={styles.recFormHelper}>National ID cannot be changed.</AppText>
+                  <AppText style={styles.recFormHelper}>National ID cannot be changed. Room number must remain unique.</AppText>
                   <View style={styles.adminFormActionsRow}>
                     <TouchableOpacity style={styles.adminGhostButton} onPress={() => setEditingPatient(null)}>
                       <Ionicons name="close" size={16} color={colors.text.primary} />
@@ -1855,12 +2335,41 @@ const handleAddPatient = async () => {
 
             {specPatients.map((p) => (
               <View key={p.nationalId} style={styles.adminTableRow}>
-                <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{p.nationalId}</AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColWide]}>{p.name}</AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{p.dob}</AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColSmall]}>{p.gender}</AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColWide]}>{p.device}</AppText>
-                <View style={styles.adminColSmall}>
+                <AppText style={[styles.adminTableCell, styles.adminColNarrow, styles.adminColPatientShrink]}>
+                  {p.roomNumber ?? p.room_number ?? '—'}
+                </AppText>
+                <AppText
+                  style={[styles.adminTableCell, styles.adminColNationalId]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {p.nationalId}
+                </AppText>
+                <AppText
+                  style={[styles.adminTableCell, styles.adminColPatientName]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {p.name}
+                </AppText>
+                <AppText
+                  style={[styles.adminTableCell, styles.adminColMedium, styles.adminColPatientShrink]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {p.dob}
+                </AppText>
+                <AppText style={[styles.adminTableCell, styles.adminColSmall, styles.adminColPatientShrink]}>
+                  {p.gender}
+                </AppText>
+                <AppText
+                  style={[styles.adminTableCell, styles.adminColPatientDevice]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {p.device}
+                </AppText>
+                <View style={[styles.adminColSmall, styles.adminColPatientShrink]}>
                   <View
                     style={[
                       styles.adminStatusPill,
@@ -1871,7 +2380,7 @@ const handleAddPatient = async () => {
                     <AppText style={styles.adminStatusText}>{p.status}</AppText>
                   </View>
                 </View>
-                <View style={[styles.adminTableCellActions, styles.adminColSmall]}>
+                <View style={[styles.adminTableCellActions, styles.adminColPatientActions]}>
                   <TouchableOpacity style={styles.adminIconButton} onPress={() => openEditPatient(p)}>
                     <Ionicons name="create-outline" size={18} color={colors.text.primary} />
                   </TouchableOpacity>
@@ -1880,7 +2389,7 @@ const handleAddPatient = async () => {
                     onPress={async () => {
                       try {
                         const res = await fetch(
-                          `http://localhost:5000/specialist/patients/${p.nationalId}/status`,
+                          `${API_BASE}/specialist/patients/${p.nationalId}/status`,
                           {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
@@ -1944,61 +2453,73 @@ const handleAddPatient = async () => {
             <View>
               <AppText style={styles.adminTableTitle}>Session Management</AppText>
               <AppText style={styles.adminTableSubtitle}>
-                Start/stop EEG sessions, view live signals, and notes
+                Create sessions (via inference) and review saved session history
               </AppText>
             </View>
             <View style={styles.specSessionControls}>
-              <TouchableOpacity style={[styles.adminPrimaryButton, styles.specSessionButton]}>
-                <Ionicons name="play" size={16} color={colors.text.white} />
-                <AppText style={styles.adminPrimaryButtonText}>Start</AppText>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.adminGhostButton, styles.specSessionButton]}>
-                <Ionicons name="stop" size={16} color={colors.text.primary} />
-                <AppText style={styles.adminGhostButtonText}>Stop</AppText>
+              <TouchableOpacity
+                style={[styles.adminPrimaryButton, styles.specSessionButton, createSessionLoading && { opacity: 0.7 }]}
+                onPress={handleSpecCreateSessionFromInference}
+                disabled={createSessionLoading}
+              >
+                <Ionicons name="add-circle-outline" size={16} color={colors.text.white} />
+                <AppText style={styles.adminPrimaryButtonText}>
+                  {createSessionLoading ? 'Creating…' : 'Create session (demo)'}
+                </AppText>
               </TouchableOpacity>
             </View>
           </View>
 
-            <View style={styles.specSessionRow}>
-              <View style={styles.specLiveCard}>
-                <View style={[styles.adminTableHeader, styles.specLiveHeader]}>
-                <View>
-                  <AppText style={styles.adminTableTitle}>Live EEG</AppText>
-                  <AppText style={styles.adminTableSubtitle}>Signal preview (mock)</AppText>
-                </View>
-                <View style={[styles.adminStatusPill, styles.adminPillInfo]}>
-                  <AppText style={styles.adminStatusText}>Connected</AppText>
-                </View>
-              </View>
-                <View style={styles.eegGraph}>
-                <EegMiniChart />
+          <View style={styles.adminTableCard}>
+            <View style={styles.adminTableHeader}>
+              <View>
+                <AppText style={styles.adminTableTitle}>Saved sessions</AppText>
+                <AppText style={styles.adminTableSubtitle}>
+                  Loaded from SQLite (`EEGSession`). New demo sessions use the integrated EEG model.
+                </AppText>
+                {specSessionsError ? (
+                  <AppText style={[styles.adminTableSubtitle, { color: colors.status.error }]}>
+                    {specSessionsError}
+                  </AppText>
+                ) : null}
               </View>
             </View>
 
-            <View style={styles.specSideCard}>
-              <View style={styles.specDetectedCard}>
-                <AppText style={styles.specDetectedLabel}>Detected Word</AppText>
-                <AppText style={styles.specDetectedWord}>ماء</AppText>
-                <AppText style={styles.specDetectedSub}>(Water)</AppText>
-                <View style={styles.confidenceBar}>
-                  <View style={[styles.confidenceFill, { width: '92%' }]} />
-                </View>
-                <AppText style={styles.specDetectedSub}>Confidence: 92%</AppText>
-              </View>
-              <View style={styles.specNotesCard}>
-                <AppText style={styles.adminTableTitle}>Specialist Notes</AppText>
-                <TextInput
-                  placeholder="Enter session observations..."
-                  placeholderTextColor={colors.text.secondary}
-                  multiline
-                  style={styles.specNotesInput}
-                />
-                <TouchableOpacity style={[styles.adminPrimaryButton, { alignSelf: 'flex-start' }]}>
-                  <Ionicons name="save-outline" size={16} color={colors.text.white} />
-                  <AppText style={styles.adminPrimaryButtonText}>Save Note</AppText>
-                </TouchableOpacity>
-              </View>
+            <View style={styles.adminTableHeadRow}>
+              <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>ID</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Patient</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Word</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Conf</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Device</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Time</AppText>
             </View>
+
+            {specSessionsLoading ? (
+              <View style={{ paddingVertical: 24 }}>
+                <AppText style={styles.adminTableSubtitle}>Loading sessions…</AppText>
+              </View>
+            ) : specSessions.length === 0 ? (
+              <View style={{ paddingVertical: 24 }}>
+                <AppText style={styles.adminTableSubtitle}>
+                  No sessions yet. Click “Create session (demo)” to generate one using the model.
+                </AppText>
+              </View>
+            ) : (
+              specSessions.map((s) => (
+                <View key={String(s.session_id)} style={styles.adminTableRow}>
+                  <AppText style={[styles.adminTableCell, styles.adminColNarrow]}>{s.session_id}</AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{s.patient_national_id}</AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{s.detected_word}</AppText>
+                  <AppText style={[styles.adminTableCellRight, styles.adminColSmall]}>
+                    {s.confidence_level == null ? '—' : `${Math.round(s.confidence_level * 100)}%`}
+                  </AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{s.device || '—'}</AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColWide]}>
+                    {(s.end_time || s.start_time || '').replace('T', ' ').slice(0, 19) || '—'}
+                  </AppText>
+                </View>
+              ))
+            )}
           </View>
         </View>
       );
@@ -2043,6 +2564,171 @@ const handleAddPatient = async () => {
                 </View>
               </View>
             ))}
+          </View>
+        </View>
+      );
+    }
+
+    if (activeSidebarItem === 'spec-settings') {
+      return (
+        <View style={styles.adminFullWidthSection}>
+          <View style={[styles.adminTableCard, styles.adminFullWidthCard, styles.recGlassCard]}>
+            <View style={styles.adminTableHeader}>
+              <View>
+                <AppText style={styles.adminTableTitle}>Settings</AppText>
+                <AppText style={styles.adminTableSubtitle}>
+                  Professional profile, clinical notifications, and EEG workspace (preferences are stored
+                  on this device until a clinician API is added)
+                </AppText>
+              </View>
+              <View style={[styles.adminStatusPill, styles.adminPillInfo]}>
+                <AppText style={styles.adminStatusText}>Clinician</AppText>
+              </View>
+            </View>
+
+            <View style={styles.recSettingsForm}>
+              <View style={styles.recSettingsRow}>
+                <View style={styles.recFormPanel}>
+                  <AppText style={styles.recPanelTitle}>Professional profile</AppText>
+                  <View style={styles.recFormField}>
+                    <AppText style={styles.recFormLabel}>Full name</AppText>
+                    <TextInput
+                      value={profileName}
+                      onChangeText={setProfileName}
+                      style={styles.recFormInput}
+                    />
+                    <AppText style={styles.recFormHelper}>Shown on reports and audit logs</AppText>
+                  </View>
+                  <View style={styles.recFormField}>
+                    <AppText style={styles.recFormLabel}>Email</AppText>
+                    <TextInput
+                      value={profileEmail}
+                      onChangeText={setProfileEmail}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      style={styles.recFormInput}
+                    />
+                    <AppText style={styles.recFormHelper}>Session summaries and alerts</AppText>
+                  </View>
+                  <View style={styles.recFormField}>
+                    <AppText style={styles.recFormLabel}>Phone</AppText>
+                    <TextInput
+                      value={profilePhone}
+                      onChangeText={setProfilePhone}
+                      keyboardType="phone-pad"
+                      style={styles.recFormInput}
+                    />
+                    <AppText style={styles.recFormHelper}>Urgent patient or device callbacks</AppText>
+                  </View>
+                </View>
+
+                <View style={[styles.recFormPanel, styles.adminSettingsPanel]}>
+                  <AppText style={styles.recPanelTitle}>Clinical notifications</AppText>
+                  <AppText style={styles.recFormHelper}>
+                    Same ideas as admin system alerts, scoped to your practice (local toggles for now).
+                  </AppText>
+
+                  <View style={styles.adminSettingRow}>
+                    <View style={styles.adminSettingTextCol}>
+                      <AppText style={styles.adminSettingLabel}>Email notifications</AppText>
+                      <AppText style={styles.adminSettingHelper}>Summaries and non-urgent updates</AppText>
+                    </View>
+                    <Switch
+                      value={specialistMedicalSettings.emailNotifications}
+                      onValueChange={(v) => setSpecialistMedicalBoolean('emailNotifications', v)}
+                      trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                      thumbColor={colors.background.white}
+                    />
+                  </View>
+
+                  <View style={styles.adminSettingRow}>
+                    <View style={styles.adminSettingTextCol}>
+                      <AppText style={styles.adminSettingLabel}>Session summary alerts</AppText>
+                      <AppText style={styles.adminSettingHelper}>When a session ends or is exported</AppText>
+                    </View>
+                    <Switch
+                      value={specialistMedicalSettings.sessionSummaryAlerts}
+                      onValueChange={(v) => setSpecialistMedicalBoolean('sessionSummaryAlerts', v)}
+                      trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                      thumbColor={colors.background.white}
+                    />
+                  </View>
+
+                  <View style={styles.adminSettingRow}>
+                    <View style={styles.adminSettingTextCol}>
+                      <AppText style={styles.adminSettingLabel}>Low decoding accuracy</AppText>
+                      <AppText style={styles.adminSettingHelper}>Warn when confidence drops</AppText>
+                    </View>
+                    <Switch
+                      value={specialistMedicalSettings.lowAccuracyWarning}
+                      onValueChange={(v) => setSpecialistMedicalBoolean('lowAccuracyWarning', v)}
+                      trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                      thumbColor={colors.background.white}
+                    />
+                  </View>
+
+                  <View style={styles.adminSettingRow}>
+                    <View style={styles.adminSettingTextCol}>
+                      <AppText style={styles.adminSettingLabel}>Critical patient alerts</AppText>
+                      <AppText style={styles.adminSettingHelper}>Pain, bathroom, medicine flags</AppText>
+                    </View>
+                    <Switch
+                      value={specialistMedicalSettings.criticalPatientAlerts}
+                      onValueChange={(v) => setSpecialistMedicalBoolean('criticalPatientAlerts', v)}
+                      trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                      thumbColor={colors.background.white}
+                    />
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.recSettingsRow}>
+                <View style={[styles.recFormPanel, { flex: 1, minWidth: 280 }]}>
+                  <AppText style={styles.recPanelTitle}>EEG workspace</AppText>
+                  <View style={styles.recFormField}>
+                    <AppText style={styles.recFormLabel}>Primary device</AppText>
+                    <View style={styles.recDeviceCard}>
+                      <Ionicons name="pulse-outline" size={18} color={colors.logo.paradiso} />
+                      <View>
+                        <AppText style={styles.recDeviceTitle}>Emotiv EPOC X</AppText>
+                        <AppText style={styles.recDeviceSub}>Default for new sessions</AppText>
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.recFormField}>
+                    <AppText style={styles.recFormLabel}>Connection status</AppText>
+                    <View style={styles.recDeviceStatusRow}>
+                      <View style={[styles.adminStatusPill, styles.adminPillSuccess]}>
+                        <AppText style={styles.adminStatusText}>Ready</AppText>
+                      </View>
+                      <AppText style={styles.recFormHelper}>Pair headset before starting a session</AppText>
+                    </View>
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.recFormActions}>
+                {profileMessage ? (
+                  <View
+                    style={[
+                      styles.adminFormMessage,
+                      profileMessage.type === 'error'
+                        ? styles.adminFormMessageError
+                        : styles.adminFormMessageSuccess,
+                    ]}
+                  >
+                    <AppText style={styles.adminFormMessageText}>{profileMessage.text}</AppText>
+                  </View>
+                ) : null}
+                <TouchableOpacity
+                  style={[styles.adminPrimaryButton, styles.recSaveButton]}
+                  onPress={handleSaveProfile}
+                >
+                  <Ionicons name="save-outline" size={16} color={colors.text.white} />
+                  <AppText style={styles.adminPrimaryButtonText}>Save profile</AppText>
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
         </View>
       );
@@ -2188,7 +2874,7 @@ const handleAddPatient = async () => {
               <View>
                 <AppText style={styles.adminTableTitle}>Settings</AppText>
                 <AppText style={styles.adminTableSubtitle}>
-                  Update personal info and device status
+                  Profile, alerts, accessibility, and privacy preferences
                 </AppText>
               </View>
             </View>
@@ -2230,16 +2916,29 @@ const handleAddPatient = async () => {
                 </View>
 
                 <View style={styles.recFormPanel}>
-                  <AppText style={styles.recPanelTitle}>Device</AppText>
+                  <AppText style={styles.recPanelTitle}>EEG device</AppText>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>EEG Device</AppText>
                     <View style={styles.recDeviceCard}>
                       <Ionicons name="pulse-outline" size={18} color={colors.logo.paradiso} />
                       <View>
-                        <AppText style={styles.recDeviceTitle}>Emotiv EPOC X</AppText>
-                        <AppText style={styles.recDeviceSub}>Auto-detected</AppText>
+                        <AppText style={styles.recDeviceTitle}>
+                          {patientSettings?.preferred_device || 'Emotiv EPOC X'}
+                        </AppText>
+                        <AppText style={styles.recDeviceSub}>Default for new sessions</AppText>
                       </View>
                     </View>
+                  </View>
+                  <View style={styles.recFormField}>
+                    <AppText style={styles.recFormLabel}>Preferred device label</AppText>
+                    <TextInput
+                      value={patientSettings?.preferred_device ?? ''}
+                      onChangeText={(t) => patchPatientSettings('preferred_device', t)}
+                      placeholder="e.g. EPOC X"
+                      placeholderTextColor={colors.text.secondary}
+                      style={styles.recFormInput}
+                      editable={!patientSettingsSaving}
+                    />
                   </View>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>Device Status</AppText>
@@ -2251,25 +2950,248 @@ const handleAddPatient = async () => {
                     </View>
                   </View>
                   <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>Notes</AppText>
-                    <AppText style={styles.recFormHelper}>Ensure your headset is powered on and paired.</AppText>
+                    <View style={styles.adminSettingRow}>
+                      <View style={styles.adminSettingTextCol}>
+                        <AppText style={styles.adminSettingLabel}>Calibration before session</AppText>
+                        <AppText style={styles.adminSettingHelper}>Run a short calibration step</AppText>
+                      </View>
+                      <Switch
+                        value={patientSettings?.calibration_enabled ?? false}
+                        onValueChange={(v) => patchPatientSettings('calibration_enabled', v)}
+                        trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                        thumbColor={colors.background.white}
+                        disabled={patientSettingsSaving}
+                      />
+                    </View>
                   </View>
                 </View>
               </View>
 
+              <View style={styles.recSettingsRow}>
+                <View style={styles.recFormPanel}>
+                  <AppText style={styles.recPanelTitle}>Alerts & safety</AppText>
+                  {patientSettingsLoading ? (
+                    <AppText style={styles.recFormHelper}>Loading preferences…</AppText>
+                  ) : patientSettings ? (
+                    <>
+                      <AppText style={styles.recFormHelper}>Enable alerts for decoded words:</AppText>
+                      {[
+                        { key: 'notify_hunger' as const, label: 'Hunger (جوع)' },
+                        { key: 'notify_thirst' as const, label: 'Thirst (عطش)' },
+                        { key: 'notify_alarm' as const, label: 'Alarm (انذار)' },
+                        { key: 'notify_bathroom' as const, label: 'Bathroom (حمام)' },
+                        { key: 'notify_medicine' as const, label: 'Medicine (دواء)' },
+                      ].map((it) => (
+                        <View key={it.key} style={styles.adminSettingRow}>
+                          <View style={styles.adminSettingTextCol}>
+                            <AppText style={styles.adminSettingLabel}>{it.label}</AppText>
+                            <AppText style={styles.adminSettingHelper}>Show a notification when detected</AppText>
+                          </View>
+                          <Switch
+                            value={patientSettings[it.key]}
+                            onValueChange={(v) => patchPatientSettings(it.key, v)}
+                            trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                            thumbColor={colors.background.white}
+                            disabled={patientSettingsSaving}
+                          />
+                        </View>
+                      ))}
+
+                      <View style={styles.recFormField}>
+                        <AppText style={styles.recFormLabel}>Minimum confidence (0–1)</AppText>
+                        <TextInput
+                          value={String(patientSettings.min_confidence)}
+                          onChangeText={(t) => {
+                            const v = Number(String(t).replace(/[^0-9.]/g, ''));
+                            if (!Number.isFinite(v)) return;
+                            patchPatientSettings('min_confidence', Math.max(0, Math.min(1, v)));
+                          }}
+                          keyboardType="numeric"
+                          style={styles.recFormInput}
+                          editable={!patientSettingsSaving}
+                        />
+                        <AppText style={styles.recFormHelper}>
+                          Higher value reduces false alerts but may miss weak signals.
+                        </AppText>
+                      </View>
+                      <View style={styles.recFormField}>
+                        <AppText style={styles.recFormLabel}>Require consecutive detections (1–5)</AppText>
+                        <TextInput
+                          value={String(patientSettings.require_consecutive)}
+                          onChangeText={(t) => {
+                            const v = Number(String(t).replace(/[^\d]/g, ''));
+                            if (!Number.isFinite(v)) return;
+                            patchPatientSettings('require_consecutive', Math.max(1, Math.min(5, v)));
+                          }}
+                          keyboardType="number-pad"
+                          style={styles.recFormInput}
+                          editable={!patientSettingsSaving}
+                        />
+                        <AppText style={styles.recFormHelper}>
+                          Example: 2 means the same word must be detected twice before alerting.
+                        </AppText>
+                      </View>
+                    </>
+                  ) : (
+                    <AppText style={styles.recFormHelper}>Preferences unavailable.</AppText>
+                  )}
+                </View>
+
+                <View style={styles.recFormPanel}>
+                  <AppText style={styles.recPanelTitle}>Accessibility & privacy</AppText>
+                  {patientSettings ? (
+                    <>
+                      <View style={styles.adminSettingRow}>
+                        <View style={styles.adminSettingTextCol}>
+                          <AppText style={styles.adminSettingLabel}>Large text</AppText>
+                          <AppText style={styles.adminSettingHelper}>Improves readability</AppText>
+                        </View>
+                        <Switch
+                          value={patientSettings.text_size === 'large'}
+                          onValueChange={(v) => patchPatientSettings('text_size', v ? 'large' : 'normal')}
+                          trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                          thumbColor={colors.background.white}
+                          disabled={patientSettingsSaving}
+                        />
+                      </View>
+                      <View style={styles.adminSettingRow}>
+                        <View style={styles.adminSettingTextCol}>
+                          <AppText style={styles.adminSettingLabel}>High contrast</AppText>
+                          <AppText style={styles.adminSettingHelper}>Stronger UI contrast</AppText>
+                        </View>
+                        <Switch
+                          value={patientSettings.high_contrast}
+                          onValueChange={(v) => patchPatientSettings('high_contrast', v)}
+                          trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                          thumbColor={colors.background.white}
+                          disabled={patientSettingsSaving}
+                        />
+                      </View>
+                      <View style={styles.recFormField}>
+                        <AppText style={styles.recFormLabel}>Data retention (days)</AppText>
+                        <TextInput
+                          value={String(patientSettings.data_retention_days)}
+                          onChangeText={(t) => {
+                            const v = Number(String(t).replace(/[^\d]/g, ''));
+                            if (!Number.isFinite(v)) return;
+                            patchPatientSettings('data_retention_days', Math.max(7, Math.min(3650, v)));
+                          }}
+                          keyboardType="number-pad"
+                          style={styles.recFormInput}
+                          editable={!patientSettingsSaving}
+                        />
+                        <AppText style={styles.recFormHelper}>How long session history is kept.</AppText>
+                      </View>
+                      <TouchableOpacity
+                        style={[styles.adminGhostButton, { alignSelf: 'flex-start' }]}
+                        onPress={() => {
+                          const url = patientSessionsExportUrl(String(user?.id ?? ''));
+                          if (Platform.OS === 'web') {
+                            window.open(url, '_blank');
+                          }
+                        }}
+                      >
+                        <Ionicons name="download-outline" size={16} color={colors.text.primary} />
+                        <AppText style={styles.adminGhostButtonText}>Export my sessions (CSV)</AppText>
+                      </TouchableOpacity>
+                      {Platform.OS !== 'web' ? (
+                        <AppText style={styles.recFormHelper}>
+                          Export is available on web in this build.
+                        </AppText>
+                      ) : null}
+                    </>
+                  ) : (
+                    <AppText style={styles.recFormHelper}>Preferences unavailable.</AppText>
+                  )}
+                </View>
+              </View>
+
+              <View style={styles.recSettingsRow}>
+                <View style={styles.recFormPanel}>
+                  <AppText style={styles.recPanelTitle}>Security</AppText>
+                  <View style={styles.recFormField}>
+                    <AppText style={styles.recFormLabel}>Current password</AppText>
+                    <TextInput
+                      value={currentPassword}
+                      onChangeText={setCurrentPassword}
+                      secureTextEntry
+                      style={styles.recFormInput}
+                      editable={!passwordSaving}
+                    />
+                  </View>
+                  <View style={styles.recFormField}>
+                    <AppText style={styles.recFormLabel}>New password</AppText>
+                    <TextInput
+                      value={newPassword}
+                      onChangeText={setNewPassword}
+                      secureTextEntry
+                      style={styles.recFormInput}
+                      editable={!passwordSaving}
+                    />
+                    <AppText style={styles.recFormHelper}>At least 8 characters.</AppText>
+                  </View>
+                  {passwordMessage ? (
+                    <View
+                      style={[
+                        styles.adminFormMessage,
+                        passwordMessage.type === 'error' ? styles.adminFormMessageError : styles.adminFormMessageSuccess,
+                      ]}
+                    >
+                      <AppText style={styles.adminFormMessageText}>{passwordMessage.text}</AppText>
+                    </View>
+                  ) : null}
+                  <TouchableOpacity
+                    style={[styles.adminPrimaryButton, { alignSelf: 'flex-start' }, passwordSaving && { opacity: 0.7 }]}
+                    onPress={handleChangePassword}
+                    disabled={passwordSaving}
+                  >
+                    <Ionicons name="key-outline" size={16} color={colors.text.white} />
+                    <AppText style={styles.adminPrimaryButtonText}>
+                      {passwordSaving ? 'Updating…' : 'Change password'}
+                    </AppText>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
               <View style={styles.recFormActions}>
-                {profileMessage && (
-                  <View style={[
-                    styles.adminFormMessage,
-                    profileMessage.type === 'error' ? styles.adminFormMessageError : styles.adminFormMessageSuccess,
-                  ]}>
+                {profileMessage ? (
+                  <View
+                    style={[
+                      styles.adminFormMessage,
+                      profileMessage.type === 'error' ? styles.adminFormMessageError : styles.adminFormMessageSuccess,
+                    ]}
+                  >
                     <AppText style={styles.adminFormMessageText}>{profileMessage.text}</AppText>
                   </View>
-                )}
-                <TouchableOpacity style={[styles.adminPrimaryButton, styles.recSaveButton]} onPress={handleSaveProfile}>
-                  <Ionicons name="save-outline" size={16} color={colors.text.white} />
-                  <AppText style={styles.adminPrimaryButtonText}>Save Changes</AppText>
-                </TouchableOpacity>
+                ) : null}
+                {patientSettingsMessage ? (
+                  <View
+                    style={[
+                      styles.adminFormMessage,
+                      patientSettingsMessage.type === 'error'
+                        ? styles.adminFormMessageError
+                        : styles.adminFormMessageSuccess,
+                    ]}
+                  >
+                    <AppText style={styles.adminFormMessageText}>{patientSettingsMessage.text}</AppText>
+                  </View>
+                ) : null}
+                <View style={{ flexDirection: 'row', gap: 12, flexWrap: 'wrap' as any }}>
+                  <TouchableOpacity style={[styles.adminPrimaryButton, styles.recSaveButton]} onPress={handleSaveProfile}>
+                    <Ionicons name="save-outline" size={16} color={colors.text.white} />
+                    <AppText style={styles.adminPrimaryButtonText}>Save profile</AppText>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.adminGhostButton, patientSettingsSaving && { opacity: 0.7 }]}
+                    onPress={handleSavePatientSettings}
+                    disabled={patientSettingsSaving || !patientSettings}
+                  >
+                    <Ionicons name="options-outline" size={16} color={colors.text.primary} />
+                    <AppText style={styles.adminGhostButtonText}>
+                      {patientSettingsSaving ? 'Saving…' : 'Save preferences'}
+                    </AppText>
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
           </View>
@@ -2332,6 +3254,36 @@ const handleAddPatient = async () => {
             <View style={styles.graphArea}>
               <View style={styles.graphBackground}>
                 <EegMiniChart />
+              </View>
+              <View style={{ marginTop: spacing.md }}>
+                <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center', flexWrap: 'wrap' as any }}>
+                  <TouchableOpacity
+                    style={[styles.adminPrimaryButton, { paddingHorizontal: 14, paddingVertical: 10 }, eegPredictLoading && { opacity: 0.7 }]}
+                    onPress={handleRunEegInference}
+                    disabled={eegPredictLoading}
+                  >
+                    <Ionicons name="hardware-chip-outline" size={16} color={colors.text.white} />
+                    <AppText style={styles.adminPrimaryButtonText}>
+                      {eegPredictLoading ? 'Running…' : 'Run inference'}
+                    </AppText>
+                  </TouchableOpacity>
+                  {eegPredictError ? (
+                    <AppText style={[styles.recFormHelper, { color: colors.status.error }]}>{eegPredictError}</AppText>
+                  ) : (
+                    <AppText style={styles.recFormHelper}>
+                      Word: {recDashboardState.detectedWord} • Conf: {recDashboardState.confidenceLabel}
+                    </AppText>
+                  )}
+                </View>
+                {eegPredictResult?.class_names?.length ? (
+                  <View style={{ marginTop: 10 }}>
+                    {eegPredictResult.class_names.map((name, idx) => (
+                      <AppText key={`${name}-${idx}`} style={styles.recFormHelper}>
+                        {name}: {Math.round((eegPredictResult.probs?.[idx] ?? 0) * 100)}%
+                      </AppText>
+                    ))}
+                  </View>
+                ) : null}
               </View>
               <View style={styles.bandRow}>
                 <View style={styles.bandItem}>
@@ -2634,16 +3586,56 @@ const handleAddPatient = async () => {
       >
         <MenuBurgerIcon size={24} color={colors.text.primary} />
       </TouchableOpacity>
-      <Logo
-        variant="icon"
-        background="transparent"
-        size={isSmallScreen ? 'small' : 'medium'}
-        style={styles.headerLogo}
-      />
-      <View style={styles.headerTextContainer}>
-        <AppText style={styles.headerTitle}>Natiqi</AppText>
-        <AppText style={styles.headerSlogan}>Mind to Message</AppText>
-      </View>
+      {isPatient ? (
+        <View style={[styles.recipientBrandRow, isRTL && styles.recipientBrandRowRtl]}>
+          <Logo
+            variant="icon"
+            background="transparent"
+            size={isSmallScreen ? 'small' : 'medium'}
+            style={isRTL ? styles.recipientLogoRtl : undefined}
+          />
+          <View
+            style={[
+              styles.recipientBrandTextColumn,
+              isRTL && styles.recipientBrandTextColumnRtl,
+            ]}
+          >
+            <AppText
+              style={[
+                styles.headerTitle,
+                styles.recipientTitleText,
+                isRTL && styles.recipientTitleTextRtl,
+              ]}
+              skipLanguageFont
+            >
+              {t('header.brand')}
+            </AppText>
+            <AppText
+              style={[
+                styles.headerSlogan,
+                styles.recipientTaglineText,
+                isRTL && styles.recipientTaglineTextRtl,
+              ]}
+              skipLanguageFont
+            >
+              {t('header.tagline')}
+            </AppText>
+          </View>
+        </View>
+      ) : (
+        <>
+          <Logo
+            variant="icon"
+            background="transparent"
+            size={isSmallScreen ? 'small' : 'medium'}
+            style={styles.headerLogo}
+          />
+          <View style={styles.headerTextContainer}>
+            <AppText style={styles.headerTitle}>Natiqi</AppText>
+            <AppText style={styles.headerSlogan}>Mind to Message</AppText>
+          </View>
+        </>
+      )}
     </TouchableOpacity>
   );
 
@@ -2672,8 +3664,8 @@ const handleAddPatient = async () => {
                     outputRange: [0, 0.4, 1],
                   }),
                 },
+                { pointerEvents: sidebarOpen ? 'auto' : 'none' },
               ]}
-              pointerEvents={sidebarOpen ? 'auto' : 'none'}
             >
               <Sidebar
                 activeItem={activeSidebarItem}
@@ -2684,7 +3676,7 @@ const handleAddPatient = async () => {
                     ? 'admin'
                     : role === 'specialist'
                     ? 'specialist'
-                    : role === 'RegisteredUser'
+                    : role === 'RegisteredUser' || role === 'patient' || role === 'Patient'
                     ? 'recipient'
                     : 'default'
                 }
@@ -2739,6 +3731,39 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: spacing.sm,
+  },
+  recipientBrandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    columnGap: spacing.lg,
+    flex: 1,
+  },
+  recipientBrandRowRtl: {
+    flexDirection: 'row-reverse',
+  },
+  recipientLogoRtl: {
+    transform: [{ scaleX: -1 }],
+  },
+  recipientBrandTextColumn: {
+    flexDirection: 'column',
+    alignItems: isNarrowHeaderBrand ? 'center' : 'flex-start',
+  },
+  recipientBrandTextColumnRtl: {
+    alignItems: isNarrowHeaderBrand ? 'center' : 'flex-end',
+  },
+  recipientTitleText: {
+    textAlign: isNarrowHeaderBrand ? 'center' : 'left',
+  },
+  recipientTitleTextRtl: {
+    textAlign: isNarrowHeaderBrand ? 'center' : 'right',
+    paddingBottom: 4,
+  },
+  recipientTaglineText: {
+    textAlign: isNarrowHeaderBrand ? 'center' : 'left',
+  },
+  recipientTaglineTextRtl: {
+    textAlign: isNarrowHeaderBrand ? 'center' : 'right',
   },
   headerLogo: {
     marginRight: spacing.md,
@@ -4031,6 +5056,9 @@ const styles = StyleSheet.create({
           elevation: 5,
         }),
   },
+  modelInfoField: {
+    marginTop: spacing.md,
+  },
   modelField: {
     marginTop: spacing.md,
   },
@@ -4061,8 +5089,38 @@ const styles = StyleSheet.create({
   },
   adminColWide: { flex: 2 },
   adminColMedium: { flex: 1.2 },
+  adminColGender: { flex: 0.75, minWidth: 52 },
   adminColSmall: { flex: 0.9 },
   adminColNarrow: { flex: 0.7 },
+  /** Patient table: gap before name; minWidth 0 so row can shrink without clipping actions */
+  adminColNationalId: {
+    flex: 0.95,
+    minWidth: 0,
+    flexShrink: 1,
+    paddingRight: spacing.md,
+  },
+  /** Patient table: three icon buttons need a fixed slice so they stay inside the card */
+  adminColPatientActions: {
+    width: 120,
+    minWidth: 120,
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  adminColPatientName: {
+    flex: 1.35,
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  adminColPatientDevice: {
+    flex: 1.15,
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  /** Merged on patient table flex columns so text can shrink instead of pushing actions off-screen */
+  adminColPatientShrink: {
+    minWidth: 0,
+    flexShrink: 1,
+  },
   adminStatusPill: {
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs / 2,

@@ -15,7 +15,7 @@ import { AppFooter } from '../../components/AppFooter';
 import { AppText } from '../../components/AppText';
 import { Logo } from '../../components/Logo';
 import { useLanguage } from '../../context/LanguageContext';
-import { colors, spacing, typography } from '../../theme';
+import { colors, spacing, typography, gradientTextBgShiftKeyframes } from '../../theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { RootStackParamList } from '../../types/navigation';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -28,6 +28,7 @@ import Animated, {
   withDelay,
   withRepeat,
 } from 'react-native-reanimated';
+import { UserRole } from '../../types';
 
 const { width, height } = Dimensions.get('window');
 const isTablet = width >= 768;
@@ -81,7 +82,10 @@ const getResponsiveStyles = (): any => ({
       WebkitTextFillColor: 'transparent',
       backgroundClip: 'text',
       backgroundSize: '200% 200%',
-      animation: 'gradient-move 3s ease infinite',
+      animationKeyframes: gradientTextBgShiftKeyframes,
+      animationDuration: '3s',
+      animationTimingFunction: 'ease',
+      animationIterationCount: 'infinite',
     }),
   },
   heroTagline: {
@@ -217,7 +221,10 @@ const getResponsiveStyles = (): any => ({
       WebkitBackgroundClip: 'text',
       WebkitTextFillColor: 'transparent',
       backgroundClip: 'text',
-      animation: 'gradient-shift 5s ease infinite',
+      animationKeyframes: gradientTextBgShiftKeyframes,
+      animationDuration: '5s',
+      animationTimingFunction: 'ease',
+      animationIterationCount: 'infinite',
     }),
   },
   headerSlogan: {
@@ -231,7 +238,10 @@ const getResponsiveStyles = (): any => ({
       WebkitBackgroundClip: 'text',
       WebkitTextFillColor: 'transparent',
       backgroundClip: 'text',
-      animation: 'gradient-shift 5s ease infinite',
+      animationKeyframes: gradientTextBgShiftKeyframes,
+      animationDuration: '5s',
+      animationTimingFunction: 'ease',
+      animationIterationCount: 'infinite',
     }),
   },
   headerRight: {
@@ -287,8 +297,6 @@ type LandingScreenNavigationProp = NativeStackNavigationProp<RootStackParamList,
 interface LandingScreenProps {
   navigation: LandingScreenNavigationProp;
 }
-
-export type UserRole = 'admin' | 'specialist' | 'RegisteredUser';
 
 interface RoleCardProps {
   title: string;
@@ -371,6 +379,7 @@ const PatientRoleCard: React.FC<PatientRoleCardProps> = ({
   onPress,
   isArabic,
 }) => {
+  const { t } = useLanguage();
   const scale = useSharedValue(1);
   const opacity = useSharedValue(1);
   const shadowOpacity = useSharedValue(0.1);
@@ -532,7 +541,7 @@ const PatientRoleCard: React.FC<PatientRoleCardProps> = ({
               { color: isHovered ? colors.text.white : colors.logo.paradiso },
             ]}
           >
-            Login
+            {t('landing.login')}
           </AppText>
           <ArrowRightSvg
             width={18}
@@ -643,7 +652,7 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({ navigation }) => {
                     fill={colors.logo.oceanGreen}
                   />
                 }
-                onPress={() => handleRoleSelect('RegisteredUser')}
+                onPress={() => handleRoleSelect('patient')}
                 isArabic={currentLanguage === 'ar'}
               />
             </View>

@@ -21,7 +21,7 @@ import { AppHeader } from '../../components/AppHeader';
 import { AppFooter } from '../../components/AppFooter';
 import { AppText } from '../../components/AppText';
 import { AnimatedButton } from '../../components/AnimatedButton';
-import { colors, spacing, typography } from '../../theme';
+import { colors, spacing, typography, gradientTextBgShiftKeyframes } from '../../theme';
 import { RootStackParamList } from '../../types/navigation';
 import { UserRole } from '../LandingScreen';
 
@@ -290,7 +290,10 @@ const styles = StyleSheet.create({
       WebkitBackgroundClip: 'text',
       WebkitTextFillColor: 'transparent',
       backgroundClip: 'text',
-      animation: 'gradient-move 4s ease infinite',
+      animationKeyframes: gradientTextBgShiftKeyframes,
+      animationDuration: '4s',
+      animationTimingFunction: 'ease',
+      animationIterationCount: 'infinite',
     }),
   },
   subtitle: {

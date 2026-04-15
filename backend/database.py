@@ -5,16 +5,15 @@ Create Synthetic Data
 # ══════════════════════════════════════════════════════════
 # SEED DATABASE WITH TEST USERS
 # ══════════════════════════════════════════════════════════
-from app import app, db
+from app import app, db, generate_password_hash
 from models import Admin, Specialist, Patient, Model, EEGSession, Alert, SessionLog, RegisteredUser
-from werkzeug.security import generate_password_hash
 from datetime import datetime, timedelta, date
 
 def seed_database():
     """Seeds the database with Natiqi data in the correct dependency order."""
     
     with app.app_context():
-        print("🌱 Starting Database Seed...")
+        print("Starting Database Seed...")
         
         # WARNING: This deletes all current data to start fresh
         db.drop_all()
@@ -114,9 +113,10 @@ def seed_database():
         patient_sarah = Patient(
             national_id=4040404040,
             name='Sarah Al-Ahmed',
+            password=generate_password_hash('user@123'),
             date_of_birth=datetime(1990, 2, 14),
             gender='Female',
-            room_number='101', # Unique room
+            room_number='4281',
             device='EPOC X',
             status='Active',
             specialist_national_id=dr_sara.national_id
@@ -125,9 +125,10 @@ def seed_database():
         patient_fatima = Patient(
             national_id=5050505050,
             name='Fatima Youssef',
+            password=generate_password_hash('user@123'),
             date_of_birth=datetime(1996, 4, 6),
             gender='Female',
-            room_number='102',
+            room_number='9156',
             device='EPOC X',
             status='Active',
             specialist_national_id=dr_sara.national_id
@@ -137,9 +138,10 @@ def seed_database():
             national_id            = 6060606060,
             name                   = 'Hassan Al-Dosari',
             role                   = 'patient',
+            password               = generate_password_hash('user@123'),
             date_of_birth          = date(1987, 5, 18),
             gender                 = 'Male',
-            room_number            = 'P-1003',
+            room_number            = '6734',
             device                 = 'EPOC X',
             status                 = 'Inactive',
             specialist_national_id = dr_omar.national_id,
@@ -149,9 +151,10 @@ def seed_database():
             national_id            = 7070707070,
             name                   = 'Maha Al-Salem',
             role                   = 'patient',
+            password               = generate_password_hash('user@123'),
             date_of_birth          = date(1994, 3, 12),
             gender                 = 'Female',
-            room_number            = 'P-1004',
+            room_number            = '8802',
             device                 = 'EPOC X',
             status                 = 'Active',
             specialist_national_id = dr_omar.national_id,
@@ -161,9 +164,10 @@ def seed_database():
             national_id            = 8080808080,
             name                   = 'Yousef Al-Harbi',
             role                   = 'patient',
+            password               = generate_password_hash('user@123'),
             date_of_birth          = date(1989, 9, 21),
             gender                 = 'Male',
-            room_number            = 'P-1005',
+            room_number            = '3091',
             device                 = 'EPOC X',
             status                 = 'Inactive',
             specialist_national_id = dr_nora.national_id,
@@ -173,9 +177,10 @@ def seed_database():
             national_id            = 9090909090,
             name                   = 'Noura Al-Jasser',
             role                   = 'patient',
+            password               = generate_password_hash('user@123'),
             date_of_birth          = date(1991, 1, 30),
             gender                 = 'Female',
-            room_number            = 'P-1006',
+            room_number            = '7455',
             device                 = 'EPOC X',
             status                 = 'Active',
             specialist_national_id = dr_nora.national_id,
@@ -185,9 +190,10 @@ def seed_database():
             national_id            = 9191919191,
             name                   = 'Omar Al-Otaibi',
             role                   = 'patient',
+            password               = generate_password_hash('user@123'),
             date_of_birth          = date(1985, 11, 2),
             gender                 = 'Male',
-            room_number            = 'P-1007',
+            room_number            = '5620',
             device                 = 'EPOC X',
             status                 = 'Active',
             specialist_national_id = dr_sara.national_id,
@@ -197,9 +203,10 @@ def seed_database():
             national_id            = 9292929292,
             name                   = 'Rania Al-Faisal',
             role                   = 'patient',
+            password               = generate_password_hash('user@123'),
             date_of_birth          = date(1998, 7, 23),
             gender                 = 'Female',
-            room_number            = 'P-1008',
+            room_number            = '1984',
             device                 = 'EPOC X',
             status                 = 'Inactive',
             specialist_national_id = dr_omar.national_id,

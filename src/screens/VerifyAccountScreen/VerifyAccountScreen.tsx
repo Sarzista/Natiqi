@@ -23,7 +23,9 @@ import { AppText } from '../../components/AppText';
 import { AnimatedButton } from '../../components/AnimatedButton';
 import { colors, spacing, typography } from '../../theme';
 import { RootStackParamList } from '../../types/navigation';
-import { UserRole } from '../LandingScreen';
+import { UserRole } from '../../types';
+import { verifyAccountCode, resendVerificationCode } from '../../services/authService';
+import { useLanguage } from '../../context/LanguageContext';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 600;
@@ -37,17 +39,32 @@ interface VerifyAccountScreenProps {
 }
 
 export const VerifyAccountScreen: React.FC<VerifyAccountScreenProps> = ({ navigation, route }) => {
+  const { t, isRTL } = useLanguage();
   const [code, setCode] = useState('');
   const [focusedField, setFocusedField] = useState<'code' | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
-  const role: UserRole = route.params?.role || 'patient';
+  const role: UserRole = route.params?.role ?? 'RegisteredUser';
+  const nationalId = route.params?.nationalId?.trim() || '';
+  const devCodeHint = route.params?.devCode;
 
-  const handleVerify = () => {
+  const textAlignCode = isRTL
+    ? ({
+        textAlign: 'right' as const,
+        ...(Platform.OS !== 'web' && { writingDirection: 'ltr' as const }),
+      })
+    : { textAlign: 'left' as const };
+
+  const handleVerify = async () => {
+    if (!nationalId) {
+      setError(t('verify.errorMissingNationalId'));
+      setMessage('');
+      return;
+    }
     if (!code.trim()) {
-      setError('Please enter the verification code.');
+      setError(t('verify.errorEmptyCode'));
       setMessage('');
       return;
     }
@@ -56,12 +73,41 @@ export const VerifyAccountScreen: React.FC<VerifyAccountScreenProps> = ({ naviga
     setMessage('');
     setLoading(true);
 
-    setTimeout(() => {
+    try {
+      await verifyAccountCode(nationalId, code.trim());
+      setMessage(t('verify.successVerified'));
+      navigation.navigate('Login', { role });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : t('verify.errorGeneric');
+      setError(msg);
+    } finally {
       setLoading(false);
-      setMessage('Account verified. You can now log in.');
-      // navigation.navigate('Login', { role });
-    }, 700);
+    }
   };
+
+  const handleResend = async () => {
+    if (!nationalId) {
+      setError(t('verify.errorMissingNationalIdShort'));
+      return;
+    }
+    setError('');
+    setMessage('');
+    setLoading(true);
+    try {
+      const out = await resendVerificationCode(nationalId);
+      setMessage(
+        out.dev_code
+          ? `${out.message}${t('verify.resendDevCodePrefix')}${out.dev_code}${t('verify.resendDevCodeClose')}`
+          : `${out.message} ${t('verify.resendCheckTerminal')}`,
+      );
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : t('verify.errorResendFailed'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const devHintWithCodeText = t('verify.devHintWithCode').replace('{code}', String(devCodeHint ?? ''));
 
   return (
     <View style={styles.container}>
@@ -78,17 +124,23 @@ export const VerifyAccountScreen: React.FC<VerifyAccountScreenProps> = ({ naviga
           showsHorizontalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.glassCard}>
+          <View
+            style={[
+              styles.glassCard,
+              isRTL && Platform.OS === 'web' ? ({ direction: 'rtl' } as object) : null,
+            ]}
+          >
             <View style={styles.header}>
-              <Image
-                source={require('../../../assets/FullLogo_Transparent_NoBuffer.png')}
-                style={styles.logo}
-                resizeMode="contain"
-              />
-              <AppText style={styles.title}>Verify Account</AppText>
-              <AppText style={styles.subtitle}>
-                Enter the verification code we sent to enable your account.
+              <AppText style={[styles.subtitle, isRTL && styles.subtitleArabic]}>
+                {t('verify.subtitle')}
               </AppText>
+              {devCodeHint ? (
+                <AppText style={[styles.devHint, isRTL && styles.devHintArabic]}>{devHintWithCodeText}</AppText>
+              ) : (
+                <AppText style={[styles.devHint, isRTL && styles.devHintArabic]}>
+                  {t('verify.devHintFlask')}
+                </AppText>
+              )}
             </View>
 
             <View style={styles.form}>
@@ -96,17 +148,19 @@ export const VerifyAccountScreen: React.FC<VerifyAccountScreenProps> = ({ naviga
                 <AppText
                   style={[
                     styles.label,
+                    isRTL && styles.labelRTL,
                     focusedField === 'code' && styles.labelFocused,
                   ]}
                 >
-                  Verification Code
+                  {t('verify.codeLabel')}
                 </AppText>
                 <TextInput
                   style={[
                     styles.input,
+                    textAlignCode,
                     focusedField === 'code' && styles.inputFocused,
                   ]}
-                  placeholder="Enter the code"
+                  placeholder={t('verify.codePlaceholder')}
                   placeholderTextColor={colors.text.muted}
                   value={code}
                   onChangeText={setCode}
@@ -121,19 +175,25 @@ export const VerifyAccountScreen: React.FC<VerifyAccountScreenProps> = ({ naviga
               {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
               {message ? <AppText style={styles.successText}>{message}</AppText> : null}
 
-              <AnimatedButton
-                title="Verify Account"
-                onPress={handleVerify}
+              <AnimatedButton title={t('verify.submit')} onPress={handleVerify} disabled={loading} loading={loading} />
+
+              <TouchableOpacity
+                style={styles.resendBtn}
+                onPress={handleResend}
                 disabled={loading}
-                loading={loading}
-              />
+                activeOpacity={0.7}
+              >
+                <AppText style={[styles.resendBtnText, isRTL && styles.linkTextArabic]}>{t('verify.resend')}</AppText>
+              </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.backToLogin}
                 onPress={() => navigation.navigate('Login', { role })}
                 activeOpacity={0.7}
               >
-                <AppText style={styles.backToLoginText}>Back to Login</AppText>
+                <AppText style={[styles.backToLoginText, isRTL && styles.linkTextArabic]}>
+                  {t('verify.backToLogin')}
+                </AppText>
               </TouchableOpacity>
             </View>
           </View>
@@ -213,31 +273,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: spacing.md,
   },
-  logo: {
-    width: isSmallScreen ? 140 : 160,
-    height: isSmallScreen ? 80 : 100,
-    marginBottom: spacing.sm,
-    transform: [{ scale: 1.5 }],
-  },
-  title: {
-    fontSize: typography.sizes['2xl'],
-    fontWeight: typography.weights.bold,
-    color: colors.text.primary,
-    marginBottom: spacing.xs,
-    ...(Platform.OS === 'web' && {
-      backgroundImage: `linear-gradient(135deg, ${colors.logo.chambray}, ${colors.logo.calypso}, ${colors.logo.paradiso}, ${colors.logo.oceanGreen}, ${colors.logo.emerald}, ${colors.logo.chambray})`,
-      backgroundSize: '200% 200%',
-      WebkitBackgroundClip: 'text',
-      WebkitTextFillColor: 'transparent',
-      backgroundClip: 'text',
-      animation: 'gradient-move 4s ease infinite',
-    }),
-  },
   subtitle: {
     fontSize: typography.sizes.base,
     color: colors.text.muted,
     textAlign: 'center',
     lineHeight: 20,
+    alignSelf: 'stretch',
+    width: '100%',
+  },
+  subtitleArabic: {
+    ...(Platform.OS !== 'web' && { writingDirection: 'rtl' as const }),
+  },
+  devHint: {
+    marginTop: spacing.sm,
+    fontSize: typography.sizes.sm,
+    color: colors.text.secondary,
+    textAlign: 'center',
+    lineHeight: 18,
+    alignSelf: 'stretch',
+    width: '100%',
+  },
+  devHintArabic: {
+    ...(Platform.OS !== 'web' && { writingDirection: 'rtl' as const }),
   },
   form: {
     width: '100%',
@@ -250,6 +307,11 @@ const styles = StyleSheet.create({
     fontWeight: typography.weights.medium,
     color: colors.logo.chambray,
     marginBottom: spacing.sm,
+    textAlign: 'left',
+  },
+  labelRTL: {
+    textAlign: 'right',
+    alignSelf: 'stretch',
   },
   input: {
     flex: 1,
@@ -280,13 +342,32 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     textAlign: 'center',
   },
+  resendBtn: {
+    marginTop: spacing.sm,
+    alignItems: 'center',
+    alignSelf: 'center',
+    width: '100%',
+    paddingVertical: spacing.xs,
+  },
+  resendBtnText: {
+    color: colors.logo.calypso,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.medium,
+    textAlign: 'center',
+  },
   backToLogin: {
     marginTop: spacing.md,
     alignItems: 'center',
+    alignSelf: 'center',
+    width: '100%',
   },
   backToLoginText: {
     color: colors.text.secondary,
     fontSize: typography.sizes.sm,
+    textAlign: 'center',
+  },
+  linkTextArabic: {
+    ...(Platform.OS !== 'web' && { writingDirection: 'rtl' as const }),
   },
   logosContainer: {
     flexDirection: 'row',
@@ -316,4 +397,3 @@ const styles = StyleSheet.create({
     opacity: 0.9,
   },
 });
-

@@ -1,4 +1,4 @@
-const API_BASE = 'http://localhost:5000';
+import { API_BASE } from '../config/apiBase';
 
 // Fetch all users (admin, specialist, registereduser)
 export const getUsers = async () => {
@@ -8,16 +8,20 @@ export const getUsers = async () => {
   return data;
 };
 
-// Add a new user
-export const addUser = async (user: {
-  national_id:        string;
-  name:               string;
-  email:              string;
-  role:               'Admin' | 'Specialist';
-  gender:             'Male' | 'Female';
-  performed_by_name:  string;   // logged-in admin's name
-  performed_by_id:    string;   // logged-in admin's national_id
-}) => {
+export type AddUserPayload = {
+  national_id: string;
+  name: string;
+  email: string;
+  role: 'Admin' | 'Specialist';
+  gender: 'Male' | 'Female';
+  performed_by_name: string;
+  performed_by_id: string;
+};
+
+export type AddUserResponse = { message: string; temp_password: string };
+
+// Add a new user (Admin or Specialist)
+export const addUser = async (user: AddUserPayload): Promise<AddUserResponse> => {
   const res = await fetch(`${API_BASE}/admin/users`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -25,7 +29,7 @@ export const addUser = async (user: {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Failed to add user');
-  return data;
+  return data as AddUserResponse;
 };
 
 // Edit a user
@@ -56,11 +60,14 @@ export const deleteUser = async (
   performed_by_name: string,
   performed_by_id:   string,
 ) => {
-  const res = await fetch(`${API_BASE}/admin/users/${nationalId}?role=${role}`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ performed_by_name, performed_by_id }),
-  });
+  const res = await fetch(
+    `${API_BASE}/admin/users/${encodeURIComponent(nationalId)}?role=${encodeURIComponent(role)}`,
+    {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ performed_by_name, performed_by_id }),
+    },
+  );
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Failed to delete user');
   return data;

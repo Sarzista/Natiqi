@@ -21,9 +21,10 @@ import { AppHeader } from '../../components/AppHeader';
 import { AppFooter } from '../../components/AppFooter';
 import { AppText } from '../../components/AppText';
 import { AnimatedButton } from '../../components/AnimatedButton';
-import { colors, spacing, typography } from '../../theme';
+import { colors, spacing, typography, gradientTextBgShiftKeyframes } from '../../theme';
 import { RootStackParamList } from '../../types/navigation';
-import { UserRole } from '../LandingScreen';
+import { UserRole } from '../../types';
+import { useLanguage } from '../../context/LanguageContext';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 600;
@@ -42,8 +43,14 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const { t, isRTL } = useLanguage();
 
-  const role: UserRole = route.params?.role || 'patient';
+  const role: UserRole = route.params?.role ?? 'RegisteredUser';
+
+  const nationalIdInputStyle = {
+    textAlign: (isRTL ? 'right' : 'left') as 'right' | 'left',
+    ...(Platform.OS !== 'web' && { writingDirection: 'ltr' as const }),
+  };
 
   const handleNationalIdChange = (text: string) => {
     const digitsOnly = text.replace(/\D/g, '').slice(0, 10);
@@ -52,7 +59,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
 
   const handleSendCode = () => {
     if (!nationalId.trim()) {
-      setError('Please enter your National ID');
+      setError(t('forgotPassword.errorEmpty'));
       setMessage('');
       return;
     }
@@ -61,7 +68,6 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
     setMessage('');
     setLoading(true);
 
-    // Simulate sending a verification code then move to reset screen
     setTimeout(() => {
       setLoading(false);
       navigation.navigate('ResetPassword', { role, nationalId });
@@ -83,17 +89,15 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
           showsHorizontalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.glassCard}>
-            <View style={styles.header}>
-              <Image
-                source={require('../../../assets/FullLogo_Transparent_NoBuffer.png')}
-                style={styles.logo}
-                resizeMode="contain"
-              />
-              <AppText style={styles.title}>Forgot Password?</AppText>
-              <AppText style={styles.subtitle}>
-                Enter your registered National ID to receive a verification code.
-              </AppText>
+          <View
+            style={[
+              styles.glassCard,
+              isRTL && Platform.OS === 'web' ? ({ direction: 'rtl' } as object) : null,
+            ]}
+          >
+            <View style={styles.panelHeader}>
+              <AppText style={styles.title}>{t('forgotPassword.heading')}</AppText>
+              <AppText style={styles.subtitle}>{t('forgotPassword.instructions')}</AppText>
             </View>
 
             <View style={styles.form}>
@@ -101,17 +105,19 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
                 <AppText
                   style={[
                     styles.label,
+                    isRTL && styles.labelRTL,
                     focusedField === 'id' && styles.labelFocused,
                   ]}
                 >
-                  Registered National ID
+                  {t('forgotPassword.nationalIdLabel')}
                 </AppText>
                 <TextInput
                   style={[
                     styles.input,
+                    nationalIdInputStyle,
                     focusedField === 'id' && styles.inputFocused,
                   ]}
-                  placeholder="Enter your National ID"
+                  placeholder={t('forgotPassword.nationalIdPlaceholder')}
                   placeholderTextColor={colors.text.muted}
                   value={nationalId}
                   onChangeText={handleNationalIdChange}
@@ -128,7 +134,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
               {message ? <AppText style={styles.successText}>{message}</AppText> : null}
 
               <AnimatedButton
-                title="Send verification code"
+                title={t('forgotPassword.sendCode')}
                 onPress={handleSendCode}
                 disabled={loading}
                 loading={loading}
@@ -139,7 +145,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
                 onPress={() => navigation.navigate('Login', { role })}
                 activeOpacity={0.7}
               >
-                <AppText style={styles.backToLoginText}>Back to Login</AppText>
+                <AppText style={styles.backToLoginText}>{t('forgotPassword.backToLogin')}</AppText>
               </TouchableOpacity>
             </View>
           </View>
@@ -215,29 +221,27 @@ const styles = StyleSheet.create({
       WebkitBackdropFilter: 'blur(20px)',
     }),
   },
-  header: {
+  panelHeader: {
     alignItems: 'center',
     marginBottom: spacing.md,
-  },
-  logo: {
-    width: isSmallScreen ? 140 : 160,
-    height: isSmallScreen ? 80 : 100,
-    marginBottom: spacing.sm,
-    // Visually larger without increasing layout height
-    transform: [{ scale: 1.5 }],
+    width: '100%',
   },
   title: {
     fontSize: typography.sizes['2xl'],
     fontWeight: typography.weights.bold,
     color: colors.text.primary,
     marginBottom: spacing.xs,
+    textAlign: 'center',
     ...(Platform.OS === 'web' && {
       backgroundImage: `linear-gradient(135deg, ${colors.logo.chambray}, ${colors.logo.calypso}, ${colors.logo.paradiso}, ${colors.logo.oceanGreen}, ${colors.logo.emerald}, ${colors.logo.chambray})`,
       backgroundSize: '200% 200%',
       WebkitBackgroundClip: 'text',
       WebkitTextFillColor: 'transparent',
       backgroundClip: 'text',
-      animation: 'gradient-move 4s ease infinite',
+      animationKeyframes: gradientTextBgShiftKeyframes,
+      animationDuration: '4s',
+      animationTimingFunction: 'ease',
+      animationIterationCount: 'infinite',
     }),
   },
   subtitle: {
@@ -257,12 +261,18 @@ const styles = StyleSheet.create({
     fontWeight: typography.weights.medium,
     color: colors.logo.chambray,
     marginBottom: spacing.sm,
+    textAlign: 'left',
+  },
+  labelRTL: {
+    textAlign: 'right',
+    alignSelf: 'stretch',
   },
   input: {
     flex: 1,
     backgroundColor: colors.background.white,
     borderRadius: 12,
-    padding: spacing.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
     fontSize: typography.sizes.base,
     color: colors.text.dark,
     borderWidth: 1,
@@ -290,10 +300,13 @@ const styles = StyleSheet.create({
   backToLogin: {
     marginTop: spacing.md,
     alignItems: 'center',
+    alignSelf: 'center',
+    width: '100%',
   },
   backToLoginText: {
     color: colors.text.secondary,
     fontSize: typography.sizes.sm,
+    textAlign: 'center',
   },
   logosContainer: {
     flexDirection: 'row',
@@ -323,4 +336,3 @@ const styles = StyleSheet.create({
     opacity: 0.9,
   },
 });
-
