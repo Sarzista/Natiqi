@@ -40,11 +40,11 @@ import { Logo } from '../../components/Logo/Logo';
 import { AnimatedGradient } from '../../components/AnimatedGradient';
 import { AppBackground } from '../../components/AppBackground';
 import { EegMiniChart } from '../../components/EegMiniChart';
-import { getPatients } from '../../services/patientService';
 import { Patient, UserRole } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { colors, spacing, typography } from '../../theme';
-
+import { getPatients, addPatient, deletePatient } from '../../services/patientService';
+import { getUsers, addUser, deleteUser } from '../../services/userService';
 const { width, height } = Dimensions.get('window');
 const isSmallScreen = width < 960;
 const HEADER_HEIGHT_WEB = 80;
@@ -65,95 +65,7 @@ type AdminSettingsState = {
   autoBackup: boolean;
 };
 
-const INITIAL_ADMIN_USERS = [
-  {
-    id: '1001',
-    name: 'Dr. Rabab Alkhalifa',
-    role: 'Specialist',
-    email: 'rabab@natiqi.com',
-    status: 'active',
-    nationalId: '1029384756',
-    gender: 'Female',
-  },
-  {
-    id: '2045',
-    name: 'Sarah Al-Ahmed',
-    role: 'Patient',
-    email: 'sarah@email.com',
-    status: 'active',
-    nationalId: '2103984756',
-    gender: 'Female',
-  },
-  {
-    id: '3002',
-    name: 'Omar Al-Mutairi',
-    role: 'Specialist',
-    email: 'omar@natiqi.com',
-    status: 'inactive',
-    nationalId: '3092847561',
-    gender: 'Male',
-  },
-  {
-    id: '4010',
-    name: 'Laila Al-Qahtani',
-    role: 'Admin',
-    email: 'laila@natiqi.com',
-    status: 'active',
-    nationalId: '4102938475',
-    gender: 'Female',
-  },
-  {
-    id: '5015',
-    name: 'Hassan Al-Dosari',
-    role: 'Specialist',
-    email: 'hassan@natiqi.com',
-    status: 'inactive',
-    nationalId: '5203948576',
-    gender: 'Male',
-  },
-  {
-    id: '6021',
-    name: 'Maha Al-Salem',
-    role: 'Patient',
-    email: 'maha@email.com',
-    status: 'active',
-    nationalId: '6302948571',
-    gender: 'Female',
-  },
-  {
-    id: '7028',
-    name: 'Yousef Al-Harbi',
-    role: 'Specialist',
-    email: 'yousef@natiqi.com',
-    status: 'active',
-    nationalId: '7401928374',
-    gender: 'Male',
-  },
-  {
-    id: '8033',
-    name: 'Noura Al-Jasser',
-    role: 'Admin',
-    email: 'noura@natiqi.com',
-    status: 'inactive',
-    nationalId: '8501928375',
-    gender: 'Female',
-  },
-];
 
-const INITIAL_SPEC_PATIENTS = [
-  { id: 'P-1001', name: 'Sarah Al-Ahmed', dob: '1990-02-14', gender: 'Female', device: 'Emotiv EPOC X', status: 'Active', nationalId: '1029384756' },
-  { id: 'P-1002', name: 'Omar Al-Mutairi', dob: '1985-11-02', gender: 'Male', device: 'Emotiv EPOC X', status: 'Active', nationalId: '2938475610' },
-  { id: 'P-1003', name: 'Laila Al-Qahtani', dob: '1993-07-19', gender: 'Female', device: 'Emotiv EPOC X', status: 'Inactive', nationalId: '3847561029' },
-  { id: 'P-1004', name: 'Fatima Youssef', dob: '1998-04-06', gender: 'Female', device: 'Emotiv EPOC X', status: 'Suspended', nationalId: '4756102938' },
-  { id: 'P-1005', name: 'Maha Al-Salem', dob: '1994-03-12', gender: 'Female', device: 'Emotiv EPOC X', status: 'Active', nationalId: '5610293847' },
-  { id: 'P-1006', name: 'Yousef Al-Harbi', dob: '1989-09-21', gender: 'Male', device: 'Emotiv EPOC X', status: 'Active', nationalId: '6102938475' },
-  { id: 'P-1007', name: 'Noura Al-Jasser', dob: '1991-01-30', gender: 'Female', device: 'Emotiv EPOC X', status: 'Inactive', nationalId: '7293847561' },
-  { id: 'P-1008', name: 'Hassan Al-Dosari', dob: '1987-05-18', gender: 'Male', device: 'Emotiv EPOC X', status: 'Suspended', nationalId: '8475610293' },
-  { id: 'P-1009', name: 'Lama Al-Khalifa', dob: '1996-12-08', gender: 'Female', device: 'Emotiv EPOC X', status: 'Active', nationalId: '9561029384' },
-  { id: 'P-1010', name: 'Adel Al-Qahtan', dob: '1983-07-04', gender: 'Male', device: 'Emotiv EPOC X', status: 'Active', nationalId: '1029384755' },
-  { id: 'P-1011', name: 'Rania Al-Faisal', dob: '1992-10-23', gender: 'Female', device: 'Emotiv EPOC X', status: 'Inactive', nationalId: '3847561028' },
-  { id: 'P-1012', name: 'Sami Al-Nasser', dob: '1995-06-15', gender: 'Male', device: 'Emotiv EPOC X', status: 'Active', nationalId: '2938475611' },
-];
 
 const INITIAL_ADMIN_SETTINGS: AdminSettingsState = {
   emailNotifications: true,
@@ -211,17 +123,38 @@ export const DashboardScreen: React.FC = () => {
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserNationalId, setNewUserNationalId] = useState('');
   const [newUserGender, setNewUserGender] = useState<'Male' | 'Female'>('Male');
-  const [newUserRole, setNewUserRole] = useState<'Admin' | 'Specialist' | 'Patient'>('Patient');
+  const [newUserRole, setNewUserRole] = useState<'Admin' | 'Specialist'>('Specialist');
   const [newUserMessage, setNewUserMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
-  const [adminUsers, setAdminUsers] = useState(INITIAL_ADMIN_USERS);
+  const [adminUsers, setAdminUsers] = useState<any[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
   const [adminSettings, setAdminSettings] = useState<AdminSettingsState>(INITIAL_ADMIN_SETTINGS);
-  const [specPatients, setSpecPatients] = useState(INITIAL_SPEC_PATIENTS);
+  const [specPatients, setSpecPatients] = useState<any[]>([]);
+  const [patientsLoading, setPatientsLoading] = useState(false);
   const [showAddPatientForm, setShowAddPatientForm] = useState(false);
   const [newPatientName, setNewPatientName] = useState('');
   const [newPatientNationalId, setNewPatientNationalId] = useState('');
   const [newPatientDob, setNewPatientDob] = useState('');
   const [newPatientGender, setNewPatientGender] = useState<'Male' | 'Female'>('Female');
   const [newPatientMessage, setNewPatientMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // ── Edit User (Admin) ──
+  const [editingUser, setEditingUser] = useState<any | null>(null);
+  const [editUserName, setEditUserName] = useState('');
+  const [editUserEmail, setEditUserEmail] = useState('');
+  const [editUserMessage, setEditUserMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // ── Edit Patient (Specialist) ──
+  const [editingPatient, setEditingPatient] = useState<any | null>(null);
+  const [editPatientName, setEditPatientName] = useState('');
+  const [editPatientDob, setEditPatientDob] = useState('');
+  const [editPatientGender, setEditPatientGender] = useState<'Male' | 'Female'>('Female');
+  const [editPatientMessage, setEditPatientMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // ── Edit Patient (Registred User) ──
+  const [profileName,    setProfileName]    = useState(user?.name  ?? '');
+  const [profileEmail,   setProfileEmail]   = useState(user?.email ?? '');
+  const [profilePhone,   setProfilePhone]   = useState(user?.phone ?? '');
+  const [profileMessage, setProfileMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   const initialSidebarItem: SidebarItemKey =
     user?.role === 'admin'
@@ -262,63 +195,43 @@ export const DashboardScreen: React.FC = () => {
     setNewUserEmail('');
     setNewUserNationalId('');
     setNewUserGender('Male');
-    setNewUserRole('Patient');
+    setNewUserRole('Specialist');
   };
 
-  const handleAddUser = () => {
+  const handleAddUser = async () => {
     const trimmedName = newUserName.trim();
     const trimmedEmail = newUserEmail.trim();
     const trimmedNationalId = newUserNationalId.trim();
     setNewUserMessage(null);
 
+    // Frontend validation (keep existing)
     if (!trimmedName || !trimmedEmail || !trimmedNationalId) {
-      setNewUserMessage({
-        type: 'error',
-        text: 'Name, email, and national ID are required.',
-      });
+      setNewUserMessage({ type: 'error', text: 'Name, email, and national ID are required.' });
       return;
     }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(trimmedEmail)) {
-      setNewUserMessage({ type: 'error', text: 'Enter a valid email address.' });
-      return;
-    }
-
     if (!/^\d{10}$/.test(trimmedNationalId)) {
-      setNewUserMessage({ type: 'error', text: 'National ID must be a 10-digit number.' });
+      setNewUserMessage({ type: 'error', text: 'National ID must be 10 digits.' });
       return;
     }
 
-    const emailExists = adminUsers.some(
-      (u) => u.email.toLowerCase() === trimmedEmail.toLowerCase()
-    );
-
-    if (emailExists) {
-      setNewUserMessage({ type: 'error', text: 'Email must be unique.' });
-      return;
+    try {
+      await addUser({
+        national_id:       trimmedNationalId,
+        name:              trimmedName,
+        email:             trimmedEmail,
+        role:              newUserRole,
+        gender:            newUserGender,
+        performed_by_name: user?.name ?? 'Admin',   // ← add
+        performed_by_id:   user?.id   ?? 'unknown', // ← add
+      });
+      // Refresh list from DB
+      const updated = await getUsers();
+      setAdminUsers(updated);
+      setNewUserMessage({ type: 'success', text: 'User added successfully.' });
+      resetAddUserForm();
+    } catch (err: any) {
+      setNewUserMessage({ type: 'error', text: err.message });
     }
-
-    const nextIdNumbers = adminUsers
-      .map((u) => parseInt(u.id, 10))
-      .filter((n) => !Number.isNaN(n));
-    const nextId =
-      (Math.max(...(nextIdNumbers.length ? nextIdNumbers : [1000])) + 1).toString();
-
-    const newUser = {
-      id: nextId,
-      name: trimmedName,
-      email: trimmedEmail,
-      role: newUserRole,
-      status: 'active',
-      nationalId: trimmedNationalId,
-      gender: newUserGender,
-    };
-
-    setAdminUsers((prev) => [...prev, newUser]);
-    setNewUserMessage({ type: 'success', text: 'User added to the list.' });
-    resetAddUserForm();
-    setShowAddUserForm(true);
   };
 
   const handleCancelAddUser = () => {
@@ -345,47 +258,151 @@ export const DashboardScreen: React.FC = () => {
     resetAddPatientForm();
   };
 
-  const handleAddPatient = () => {
-    const name = newPatientName.trim();
+  const openEditUser = (userRow: any) => {
+    setEditingUser(userRow);
+    setEditUserName(userRow.name);
+    setEditUserEmail(userRow.email);
+    setEditUserMessage(null);
+    setShowAddUserForm(false);
+  };
+
+  const handleSaveUser = async () => {
+    if (!editUserName.trim() || !editUserEmail.trim()) {
+      setEditUserMessage({ type: 'error', text: 'Name and email are required.' });
+      return;
+    }
+    try {
+      const res = await fetch(`http://localhost:5000/admin/users/${editingUser.nationalId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name:              editUserName.trim(),
+          email:             editUserEmail.trim(),
+          role:              editingUser.role,
+          performed_by_name: user?.name ?? 'Admin',   // ← add
+          performed_by_id:   user?.id   ?? 'unknown', // ← add
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Update failed');
+      setAdminUsers(prev => prev.map(u => u.nationalId === editingUser.nationalId ? { ...u, name: editUserName.trim(), email: editUserEmail.trim() } : u));
+      setEditUserMessage({ type: 'success', text: 'User updated successfully.' });
+      setTimeout(() => setEditingUser(null), 1000);
+    } catch (err: any) {
+      setEditUserMessage({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    const name  = profileName.trim();
+    const email = profileEmail.trim();
+    setProfileMessage(null);
+
+    if (!name || !email) {
+      setProfileMessage({ type: 'error', text: 'Name and email are required.' });
+      return;
+    }
+
+    try {
+      const res = await fetch('http://localhost:5000/profile/update', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          national_id: user?.id,
+          role:        user?.role,
+          name,
+          email,
+          phone: profilePhone.trim(),
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Update failed');
+      setProfileMessage({ type: 'success', text: 'Profile updated successfully.' });
+    } catch (err: any) {
+      setProfileMessage({ type: 'error', text: err.message });
+    }
+  };
+
+  const openEditPatient = (patient: any) => {
+    setEditingPatient(patient);
+    setEditPatientName(patient.name);
+    setEditPatientDob(patient.dob);
+    setEditPatientGender(patient.gender === 'Male' ? 'Male' : 'Female');
+    setEditPatientMessage(null);
+    setShowAddPatientForm(false);
+  };
+
+  const handleSavePatient = async () => {
+    if (!editPatientName.trim() || !editPatientDob.trim()) {
+      setEditPatientMessage({ type: 'error', text: 'Name and DOB are required.' });
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(editPatientDob.trim())) {
+      setEditPatientMessage({ type: 'error', text: 'Use DOB format YYYY-MM-DD.' });
+      return;
+    }
+    try {
+      const res = await fetch(`http://localhost:5000/specialist/patients/${editingPatient.nationalId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name:              editPatientName.trim(),
+          dob:               editPatientDob.trim(),
+          gender:            editPatientGender,
+          performed_by_name: user?.name ?? 'Specialist',
+          performed_by_id:   user?.id   ?? 'unknown',
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Update failed');
+      setSpecPatients(prev => prev.map(p => p.nationalId === editingPatient.nationalId ? { ...p, name: editPatientName.trim(), dob: editPatientDob.trim(), gender: editPatientGender } : p));
+      setEditPatientMessage({ type: 'success', text: 'Patient updated successfully.' });
+      setTimeout(() => setEditingPatient(null), 1000);
+    } catch (err: any) {
+      setEditPatientMessage({ type: 'error', text: err.message });
+    }
+  };
+
+const handleAddPatient = async () => {
+    const name       = newPatientName.trim();
     const nationalId = newPatientNationalId.trim();
-    const dob = newPatientDob.trim();
+    const dob        = newPatientDob.trim();
     setNewPatientMessage(null);
 
+    // Frontend validation (same as before)
     if (!name || !nationalId || !dob) {
       setNewPatientMessage({ type: 'error', text: 'Name, National ID, and DOB are required.' });
       return;
     }
-
     if (!/^\d{10}$/.test(nationalId)) {
-      setNewPatientMessage({ type: 'error', text: 'National ID must be a 10-digit number.' });
+      setNewPatientMessage({ type: 'error', text: 'National ID must be 10 digits.' });
       return;
     }
-
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
       setNewPatientMessage({ type: 'error', text: 'Use DOB format YYYY-MM-DD.' });
       return;
     }
 
-    const nextIdNumber = specPatients
-      .map((p) => parseInt(p.id.replace('P-', ''), 10))
-      .filter((n) => !Number.isNaN(n));
-    const nextId = `P-${(Math.max(...(nextIdNumber.length ? nextIdNumber : [1000])) + 1).toString()}`;
+    try {
+      await addPatient({
+        national_id:       nationalId,
+        name:              name,
+        dob:               dob,
+        gender:            newPatientGender,
+        specialist_id:     user?.id,
+        performed_by_name: user?.name ?? 'Specialist',
+        performed_by_id:   user?.id   ?? 'unknown',
+      });
 
-    const newPatient = {
-      id: nextId,
-      name,
-      dob,
-      gender: newPatientGender,
-      device: 'Emotiv EPOC X',
-      status: 'Active',
-      nationalId,
-      role: 'Patient',
-    };
+      // Refresh list from DB
+      const updated = await getPatients();
+      setSpecPatients(updated);
+      setNewPatientMessage({ type: 'success', text: 'Patient added successfully.' });
+      resetAddPatientForm();
 
-    setSpecPatients((prev) => [...prev, newPatient]);
-    setNewPatientMessage({ type: 'success', text: 'Patient added to the list.' });
-    resetAddPatientForm();
-    setShowAddPatientForm(true);
+    } catch (err: any) {
+      setNewPatientMessage({ type: 'error', text: err.message });
+    }
   };
 
   const setBooleanSetting = <K extends keyof AdminSettingsState>(
@@ -409,12 +426,44 @@ export const DashboardScreen: React.FC = () => {
     'Monthly',
   ];
   const genderOptions: Array<'Male' | 'Female'> = ['Male', 'Female'];
-  const roleOptions: Array<'Admin' | 'Specialist' | 'Patient'> = ['Admin', 'Specialist', 'Patient'];
+  const roleOptions: Array<'Admin' | 'Specialist' > = ['Admin', 'Specialist'];
 
-  const role: UserRole = user?.role ?? 'patient';
+  const role: UserRole = user?.role ?? 'RegisteredUser';
   const isAdmin = role === 'admin';
-  const isPatient = role === 'patient';
+  const isPatient = role === 'RegisteredUser';
   const roleLabel = isPatient ? 'Patient' : isAdmin ? 'Admin' : 'Clinician';
+
+
+  // Load real users from Flask when admin opens user management
+  useEffect(() => {
+    if (isAdmin && activeSidebarItem === 'admin-users') {
+      setUsersLoading(true);
+      getUsers()
+        .then(setAdminUsers)
+        .catch(console.error)
+        .finally(() => setUsersLoading(false));
+    }
+  }, [isAdmin, activeSidebarItem]);
+
+  useEffect(() => {
+    if (role === 'specialist' && activeSidebarItem === 'spec-patients') {
+      setPatientsLoading(true);
+      getPatients(user?.id)
+        .then(setSpecPatients)
+        .catch(console.error)
+        .finally(() => setPatientsLoading(false));
+    }
+  }, [role, activeSidebarItem]);
+
+  useEffect(() => {
+    if (isAdmin && activeSidebarItem === 'admin-logs') {
+      fetch('http://localhost:5000/admin/system-logs')
+        .then(res => res.json())
+        .then(setSystemLogs)
+        .catch(console.error);
+    }
+  }, [isAdmin, activeSidebarItem]);
+
 
   const adminStats = [
     {
@@ -575,160 +624,7 @@ export const DashboardScreen: React.FC = () => {
     { id: 'RS-1001', date: '2025-12-05 06:05', word: 'راحة', accuracy: '88%', duration: '14m' },
   ];
 
-  const recSettings = {
-    name: 'Sarah Al-Ahmed',
-    email: 'sarah@email.com',
-    phone: '+966-5-5555-5555',
-    device: 'Emotiv Epoc X',
-    deviceStatus: 'Connected',
-  };
-
-  const adminLogs = [
-    {
-      id: 'S-4832',
-      user: 'Sarah Al-Ahmed',
-      role: 'Patient',
-      event: 'EEG session',
-      status: 'completed',
-      time: '10:24',
-      duration: '15m',
-      device: 'EPOC X',
-      location: 'Room 12',
-      severity: 'low',
-    },
-    {
-      id: 'S-4831',
-      user: 'Dr. Rabab Alkhalifa',
-      role: 'Specialist',
-      event: 'Model switch to CNN-LSTM v1.0',
-      status: 'info',
-      time: '09:55',
-      duration: '—',
-      device: 'Web console',
-      location: 'Clinic',
-      severity: 'low',
-    },
-    {
-      id: 'S-4829',
-      user: 'System',
-      role: 'Admin',
-      event: 'Validation loss spike detected',
-      status: 'warning',
-      time: '09:20',
-      duration: '—',
-      device: 'Pipeline',
-      location: 'Cloud',
-      severity: 'med',
-    },
-    {
-      id: 'S-4828',
-      user: 'Omar Al-Mutairi',
-      role: 'Specialist',
-      event: 'Alert acknowledged',
-      status: 'warning',
-      time: '09:10',
-      duration: '—',
-      device: 'Tablet',
-      location: 'ICU',
-      severity: 'med',
-    },
-    {
-      id: 'S-4820',
-      user: 'System',
-      role: 'Admin',
-      event: 'EEG drop on channel FC5',
-      status: 'warning',
-      time: '08:50',
-      duration: '—',
-      device: 'EPOC X',
-      location: 'Room 9',
-      severity: 'high',
-    },
-    {
-      id: 'S-4815',
-      user: 'System',
-      role: 'Admin',
-      event: 'Nightly training completed',
-      status: 'info',
-      time: '07:10',
-      duration: '42m',
-      device: 'Pipeline',
-      location: 'Cloud',
-      severity: 'low',
-    },
-    {
-      id: 'S-4810',
-      user: 'Fatima Youssef',
-      role: 'Patient',
-      event: 'Session paused by caregiver',
-      status: 'warning',
-      time: '06:55',
-      duration: '—',
-      device: 'EPOC X',
-      location: 'Ward B',
-      severity: 'med',
-    },
-    {
-      id: 'S-4802',
-      user: 'System',
-      role: 'Admin',
-      event: 'Auth token rotated',
-      status: 'completed',
-      time: '05:30',
-      duration: '—',
-      device: 'Service',
-      location: 'Cloud',
-      severity: 'low',
-    },
-    {
-      id: 'S-4799',
-      user: 'Yousef Al-Harbi',
-      role: 'Specialist',
-      event: 'Exported session report',
-      status: 'completed',
-      time: '04:48',
-      duration: '—',
-      device: 'Tablet',
-      location: 'ICU',
-      severity: 'low',
-    },
-    {
-      id: 'S-4791',
-      user: 'System',
-      role: 'Admin',
-      event: 'Signal quality degraded',
-      status: 'warning',
-      time: '04:05',
-      duration: '—',
-      device: 'EPOC X',
-      location: 'Room 3',
-      severity: 'high',
-    },
-    {
-      id: 'S-4780',
-      user: 'Dr. Rabab Alkhalifa',
-      role: 'Specialist',
-      event: 'Calibration scheduled',
-      status: 'info',
-      time: '03:40',
-      duration: '—',
-      device: 'Web console',
-      location: 'Clinic',
-      severity: 'low',
-    },
-    {
-      id: 'S-4775',
-      user: 'System',
-      role: 'Admin',
-      event: 'Model rollback prepared',
-      status: 'info',
-      time: '03:10',
-      duration: '—',
-      device: 'Pipeline',
-      location: 'Cloud',
-      severity: 'med',
-    },
-  ];
+  const [systemLogs, setSystemLogs] = useState<any[]>([]);
 
   const filteredAdminUsers = adminUsers.filter((u) => {
     const q = userSearch.trim().toLowerCase();
@@ -987,6 +883,49 @@ export const DashboardScreen: React.FC = () => {
               </View>
             )}
 
+            {editingUser && (
+              <View style={[styles.adminTableCard, styles.recGlassCard, styles.adminFormCard]}>
+                <View style={styles.adminFormHeader}>
+                  <View>
+                    <AppText style={styles.adminTableTitle}>Edit User</AppText>
+                    <AppText style={styles.adminTableSubtitle}>Editing: {editingUser.name} ({editingUser.role})</AppText>
+                  </View>
+                  <TouchableOpacity style={styles.adminGhostButton} onPress={() => setEditingUser(null)}>
+                    <Ionicons name="close" size={18} color={colors.text.primary} />
+                    <AppText style={styles.adminGhostButtonText}>Cancel</AppText>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.adminFormGrid}>
+                  <View style={styles.adminFormField}>
+                    <AppText style={styles.recFormLabel}>Full Name</AppText>
+                    <TextInput value={editUserName} onChangeText={setEditUserName} placeholder="Full name" placeholderTextColor={colors.text.secondary} style={styles.recFormInput} />
+                  </View>
+                  <View style={styles.adminFormField}>
+                    <AppText style={styles.recFormLabel}>Email</AppText>
+                    <TextInput value={editUserEmail} onChangeText={setEditUserEmail} placeholder="name@email.com" placeholderTextColor={colors.text.secondary} keyboardType="email-address" autoCapitalize="none" style={styles.recFormInput} />
+                  </View>
+                </View>
+                {editUserMessage && (
+                  <View style={[styles.adminFormMessage, editUserMessage.type === 'error' ? styles.adminFormMessageError : styles.adminFormMessageSuccess]}>
+                    <AppText style={styles.adminFormMessageText}>{editUserMessage.text}</AppText>
+                  </View>
+                )}
+                <View style={styles.adminFormActions}>
+                  <AppText style={styles.recFormHelper}>National ID and role cannot be changed.</AppText>
+                  <View style={styles.adminFormActionsRow}>
+                    <TouchableOpacity style={styles.adminGhostButton} onPress={() => setEditingUser(null)}>
+                      <Ionicons name="close" size={16} color={colors.text.primary} />
+                      <AppText style={styles.adminGhostButtonText}>Cancel</AppText>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.adminPrimaryButton} onPress={handleSaveUser}>
+                      <Ionicons name="save-outline" size={18} color={colors.text.white} />
+                      <AppText style={styles.adminPrimaryButtonText}>Save Changes</AppText>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            )}            
+
             <View style={styles.adminSearchBar}>
               <Ionicons name="search-outline" size={18} color={colors.text.secondary} />
               <TextInput
@@ -1034,10 +973,25 @@ export const DashboardScreen: React.FC = () => {
                   </View>
                 </View>
                 <View style={[styles.adminTableCellActions, styles.adminColSmall]}>
-                  <TouchableOpacity style={styles.adminIconButton}>
+                  <TouchableOpacity style={styles.adminIconButton} onPress={() => openEditUser(userRow)}>
                     <Ionicons name="create-outline" size={18} color={colors.text.primary} />
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.adminIconButton}>
+                  <TouchableOpacity
+                    style={styles.adminIconButton}
+                    onPress={async () => {
+                      try {
+                        await deleteUser(
+                        userRow.nationalId,
+                        userRow.role,
+                        user?.name ?? 'Admin',
+                        user?.id   ?? 'unknown',
+                      );
+                        setAdminUsers(prev => prev.filter(u => u.nationalId !== userRow.nationalId));
+                      } catch (err: any) {
+                        console.error(err.message);
+                      }
+                    }}
+                  >
                     <Ionicons name="trash-outline" size={18} color={colors.status.error} />
                   </TouchableOpacity>
                 </View>
@@ -1188,86 +1142,53 @@ export const DashboardScreen: React.FC = () => {
           <View style={[styles.adminTableCard, styles.adminFullWidthCard]}>
             <View style={styles.adminTableHeader}>
               <View>
-                <AppText style={styles.adminTableTitle}>Session Logs</AppText>
+                <AppText style={styles.adminTableTitle}>System Logs</AppText>
                 <AppText style={styles.adminTableSubtitle}>
-                  Expanded details for recent EEG sessions and events
+                  All admin and specialist actions
                 </AppText>
               </View>
-              <TouchableOpacity style={styles.adminGhostButton}>
-                <Ionicons name="download-outline" size={18} color={colors.text.primary} />
-                <AppText style={styles.adminGhostButtonText}>Export</AppText>
-              </TouchableOpacity>
             </View>
 
             <View style={styles.adminTableHeadRow}>
-              <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>ID</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Log ID</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>User</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Role</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Event</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Status</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Time</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Duration</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Device</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Location</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Severity</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Role</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>National ID</AppText>
+              <AppText style={[styles.adminTableHeadText, { flex: 3 }]}>Event</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Timestamp</AppText>
             </View>
 
-            {adminLogs.map((log) => (
-              <View key={log.id} style={styles.adminTableRow}>
-                <AppText style={[styles.adminTableCell, styles.adminColNarrow]}>
-                  {log.id}
+            {systemLogs.length === 0 ? (
+              <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+                <Ionicons name="document-outline" size={32} color={colors.text.secondary} />
+                <AppText style={[styles.adminTableSubtitle, { marginTop: 8 }]}>
+                  No logs yet. Actions will appear here automatically.
                 </AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColWide]}>
-                  {log.user}
-                </AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColMedium]}>
-                  {log.role}
-                </AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColWide]}>
-                  {log.event}
-                </AppText>
-                <View style={styles.adminColSmall}>
-                  <View
-                    style={[
-                      styles.adminStatusPill,
-                      log.status === 'completed' && styles.adminPillSuccess,
-                      log.status === 'warning' && styles.adminPillWarning,
-                      log.status === 'info' && styles.adminPillInfo,
-                    ]}
-                  >
-                    <AppText style={styles.adminStatusText}>
-                      {log.status}
-                    </AppText>
-                  </View>
-                </View>
-                <AppText style={[styles.adminTableCell, styles.adminColSmall]}>
-                  {log.time}
-                </AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColSmall]}>
-                  {log.duration}
-                </AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColSmall]}>
-                  {log.device}
-                </AppText>
-                <AppText style={[styles.adminTableCell, styles.adminColSmall]}>
-                  {log.location}
-                </AppText>
-                <View style={styles.adminColSmall}>
-                  <View
-                    style={[
-                      styles.adminStatusPill,
-                      log.severity === 'high' && styles.adminPillWarning,
-                      log.severity === 'med' && styles.adminPillInfo,
-                      log.severity === 'low' && styles.adminPillSuccess,
-                    ]}
-                  >
-                    <AppText style={styles.adminStatusText}>
-                      {log.severity}
-                    </AppText>
-                  </View>
-                </View>
               </View>
-            ))}
+            ) : (
+              systemLogs.map((log) => (
+                <View key={log.id} style={styles.adminTableRow}>
+                  <AppText style={[styles.adminTableCell, styles.adminColWide]}>
+                    {log.id}
+                  </AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColWide]}>
+                    {log.userName}
+                  </AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColSmall]}>
+                    {log.role ?? '—'}
+                  </AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColMedium]}>
+                    {log.nationalId}
+                  </AppText>
+                  <AppText style={[styles.adminTableCell, { flex: 3 }]}>
+                    {log.event}
+                  </AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColMedium]}>
+                    {log.timestamp}
+                  </AppText>
+                </View>
+              ))
+            )}
           </View>
         </View>
       );
@@ -1867,7 +1788,7 @@ export const DashboardScreen: React.FC = () => {
             )}
 
             <View style={styles.adminTableHeadRow}>
-              <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>ID</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>National ID</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Name</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>DOB</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Gender</AppText>
@@ -1876,9 +1797,65 @@ export const DashboardScreen: React.FC = () => {
               <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Actions</AppText>
             </View>
 
+{editingPatient && (
+              <View style={[styles.adminTableCard, styles.recGlassCard, styles.adminFormCard]}>
+                <View style={styles.adminFormHeader}>
+                  <View>
+                    <AppText style={styles.adminTableTitle}>Edit Patient</AppText>
+                    <AppText style={styles.adminTableSubtitle}>Editing: {editingPatient.name}</AppText>
+                  </View>
+                  <TouchableOpacity style={styles.adminGhostButton} onPress={() => setEditingPatient(null)}>
+                    <Ionicons name="close" size={18} color={colors.text.primary} />
+                    <AppText style={styles.adminGhostButtonText}>Cancel</AppText>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.adminFormGrid}>
+                  <View style={styles.adminFormField}>
+                    <AppText style={styles.recFormLabel}>Patient Name</AppText>
+                    <TextInput value={editPatientName} onChangeText={setEditPatientName} placeholder="Full name" placeholderTextColor={colors.text.secondary} style={styles.recFormInput} />
+                  </View>
+                  <View style={styles.adminFormField}>
+                    <AppText style={styles.recFormLabel}>Date of Birth</AppText>
+                    <TextInput value={editPatientDob} onChangeText={setEditPatientDob} placeholder="YYYY-MM-DD" placeholderTextColor={colors.text.secondary} style={styles.recFormInput} />
+                    <AppText style={styles.recFormHelper}>Format: YYYY-MM-DD</AppText>
+                  </View>
+                </View>
+                <View style={styles.adminFormGrid}>
+                  <View style={styles.adminFormField}>
+                    <AppText style={styles.recFormLabel}>Gender</AppText>
+                    <View style={styles.adminSelectRow}>
+                      {(['Male', 'Female'] as const).map((option) => (
+                        <TouchableOpacity key={option} style={[styles.adminSelectOption, editPatientGender === option && styles.adminSelectOptionActive]} onPress={() => setEditPatientGender(option)}>
+                          <AppText style={[styles.adminSelectOptionText, editPatientGender === option && styles.adminSelectOptionTextActive]}>{option}</AppText>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                </View>
+                {editPatientMessage && (
+                  <View style={[styles.adminFormMessage, editPatientMessage.type === 'error' ? styles.adminFormMessageError : styles.adminFormMessageSuccess]}>
+                    <AppText style={styles.adminFormMessageText}>{editPatientMessage.text}</AppText>
+                  </View>
+                )}
+                <View style={styles.adminFormActions}>
+                  <AppText style={styles.recFormHelper}>National ID cannot be changed.</AppText>
+                  <View style={styles.adminFormActionsRow}>
+                    <TouchableOpacity style={styles.adminGhostButton} onPress={() => setEditingPatient(null)}>
+                      <Ionicons name="close" size={16} color={colors.text.primary} />
+                      <AppText style={styles.adminGhostButtonText}>Cancel</AppText>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.adminPrimaryButton} onPress={handleSavePatient}>
+                      <Ionicons name="save-outline" size={18} color={colors.text.white} />
+                      <AppText style={styles.adminPrimaryButtonText}>Save Changes</AppText>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            )}
+
             {specPatients.map((p) => (
-              <View key={p.id} style={styles.adminTableRow}>
-                <AppText style={[styles.adminTableCell, styles.adminColNarrow]}>{p.id}</AppText>
+              <View key={p.nationalId} style={styles.adminTableRow}>
+                <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{p.nationalId}</AppText>
                 <AppText style={[styles.adminTableCell, styles.adminColWide]}>{p.name}</AppText>
                 <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{p.dob}</AppText>
                 <AppText style={[styles.adminTableCell, styles.adminColSmall]}>{p.gender}</AppText>
@@ -1888,7 +1865,6 @@ export const DashboardScreen: React.FC = () => {
                     style={[
                       styles.adminStatusPill,
                       p.status === 'Active' && styles.adminPillSuccess,
-                      p.status === 'Suspended' && styles.adminPillWarning,
                       p.status === 'Inactive' && styles.adminPillMuted,
                     ]}
                   >
@@ -1896,13 +1872,61 @@ export const DashboardScreen: React.FC = () => {
                   </View>
                 </View>
                 <View style={[styles.adminTableCellActions, styles.adminColSmall]}>
-                  <TouchableOpacity style={styles.adminIconButton}>
+                  <TouchableOpacity style={styles.adminIconButton} onPress={() => openEditPatient(p)}>
                     <Ionicons name="create-outline" size={18} color={colors.text.primary} />
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.adminIconButton}>
-                    <Ionicons name="pause-circle-outline" size={18} color={colors.status.warning} />
+                  <TouchableOpacity
+                    style={styles.adminIconButton}
+                    onPress={async () => {
+                      try {
+                        const res = await fetch(
+                          `http://localhost:5000/specialist/patients/${p.nationalId}/status`,
+                          {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              performed_by_name: user?.name ?? 'Specialist',
+                              performed_by_id:   user?.id   ?? 'unknown',
+                            }),
+                          }
+                        );
+                        const result = await res.json();
+                        if (!res.ok) throw new Error(result.error || 'Failed to update status');
+
+                        // Update local list immediately so UI reflects change
+                        setSpecPatients(prev =>
+                          prev.map(pt =>
+                            pt.nationalId === p.nationalId
+                              ? { ...pt, status: result.status === 'Active' ? 'Active' : 'Inactive' }
+                              : pt
+                          )
+                        );
+                      } catch (err: any) {
+                        console.error('Status toggle failed:', err.message);
+                      }
+                    }}
+                  >
+                    <Ionicons
+                      name={(p.status === 'Active') ? 'pause-circle-outline' : 'play-circle-outline'}
+                      size={18}
+                      color={p.status === 'Active' ? colors.status.warning : colors.logo.oceanGreen}
+                    />
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.adminIconButton}>
+                  <TouchableOpacity
+                    style={styles.adminIconButton}
+                    onPress={async () => {
+                      try {
+                        await deletePatient(
+                          p.nationalId,
+                          user?.name ?? 'Specialist',
+                          user?.id   ?? 'unknown',
+                        );
+                        setSpecPatients(prev => prev.filter(pt => pt.nationalId !== p.nationalId));
+                      } catch (err: any) {
+                        console.error('Delete failed:', err.message);
+                      }
+                    }}
+                  >
                     <Ionicons name="trash-outline" size={18} color={colors.status.error} />
                   </TouchableOpacity>
                 </View>
@@ -2175,25 +2199,31 @@ export const DashboardScreen: React.FC = () => {
                   <AppText style={styles.recPanelTitle}>Personal info</AppText>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>Full Name</AppText>
-                    <TextInput defaultValue={recSettings.name} style={styles.recFormInput} />
+                    <TextInput 
+                    value={profileName} 
+                    onChangeText={setProfileName}
+                    style={styles.recFormInput}
+                    />
                     <AppText style={styles.recFormHelper}>Use your name as on file</AppText>
                   </View>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>Email Address</AppText>
                     <TextInput
-                      defaultValue={recSettings.email}
-                      style={styles.recFormInput}
+                      value={profileEmail}
+                      onChangeText={setProfileEmail}
                       keyboardType="email-address"
                       autoCapitalize="none"
+                      style={styles.recFormInput}
                     />
                     <AppText style={styles.recFormHelper}>We’ll send reports here</AppText>
                   </View>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>Phone Number</AppText>
                     <TextInput
-                      defaultValue={recSettings.phone}
-                      style={styles.recFormInput}
+                      value={profilePhone}
+                      onChangeText={setProfilePhone}
                       keyboardType="phone-pad"
+                      style={styles.recFormInput}
                     />
                     <AppText style={styles.recFormHelper}>For urgent alerts</AppText>
                   </View>
@@ -2206,7 +2236,7 @@ export const DashboardScreen: React.FC = () => {
                     <View style={styles.recDeviceCard}>
                       <Ionicons name="pulse-outline" size={18} color={colors.logo.paradiso} />
                       <View>
-                        <AppText style={styles.recDeviceTitle}>{recSettings.device}</AppText>
+                        <AppText style={styles.recDeviceTitle}>Emotiv EPOC X</AppText>
                         <AppText style={styles.recDeviceSub}>Auto-detected</AppText>
                       </View>
                     </View>
@@ -2215,7 +2245,7 @@ export const DashboardScreen: React.FC = () => {
                     <AppText style={styles.recFormLabel}>Device Status</AppText>
                     <View style={styles.recDeviceStatusRow}>
                       <View style={[styles.adminStatusPill, styles.adminPillSuccess]}>
-                        <AppText style={styles.adminStatusText}>{recSettings.deviceStatus}</AppText>
+                        <AppText style={styles.adminStatusText}>Connected</AppText>
                       </View>
                       <AppText style={styles.recFormHelper}>Last sync: 45s ago</AppText>
                     </View>
@@ -2228,8 +2258,15 @@ export const DashboardScreen: React.FC = () => {
               </View>
 
               <View style={styles.recFormActions}>
-                <AppText style={styles.recFormHint}>Changes save locally; backend wiring not enabled.</AppText>
-                <TouchableOpacity style={[styles.adminPrimaryButton, styles.recSaveButton]}>
+                {profileMessage && (
+                  <View style={[
+                    styles.adminFormMessage,
+                    profileMessage.type === 'error' ? styles.adminFormMessageError : styles.adminFormMessageSuccess,
+                  ]}>
+                    <AppText style={styles.adminFormMessageText}>{profileMessage.text}</AppText>
+                  </View>
+                )}
+                <TouchableOpacity style={[styles.adminPrimaryButton, styles.recSaveButton]} onPress={handleSaveProfile}>
                   <Ionicons name="save-outline" size={16} color={colors.text.white} />
                   <AppText style={styles.adminPrimaryButtonText}>Save Changes</AppText>
                 </TouchableOpacity>
@@ -2647,7 +2684,7 @@ export const DashboardScreen: React.FC = () => {
                     ? 'admin'
                     : role === 'specialist'
                     ? 'specialist'
-                    : role === 'patient'
+                    : role === 'RegisteredUser'
                     ? 'recipient'
                     : 'default'
                 }
