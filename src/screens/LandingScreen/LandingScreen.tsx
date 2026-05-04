@@ -652,7 +652,7 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({ navigation }) => {
                     fill={colors.logo.oceanGreen}
                   />
                 }
-                onPress={() => handleRoleSelect('patient')}
+                onPress={() => handleRoleSelect('RegisteredUser')}
                 isArabic={currentLanguage === 'ar'}
               />
             </View>

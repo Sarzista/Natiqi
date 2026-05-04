@@ -24,6 +24,7 @@ import { AnimatedButton } from '../../components/AnimatedButton';
 import { colors, spacing, typography, gradientTextBgShiftKeyframes } from '../../theme';
 import { RootStackParamList } from '../../types/navigation';
 import { UserRole } from '../LandingScreen';
+import { API_BASE } from '../../config/apiBase';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 600;
@@ -45,10 +46,11 @@ export const ResetPasswordScreen: React.FC<ResetPasswordScreenProps> = ({ naviga
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
-  const role: UserRole = route.params?.role || 'patient';
+  const role: UserRole = route.params?.role || 'RegisteredUser';
   const nationalId = route.params?.nationalId;
+  const devCode = route.params?.devCode || '';
 
-  const handleReset = () => {
+  const handleReset = async () => {
     if (!verificationCode.trim() || !newPassword.trim() || !confirmPassword.trim()) {
       setError('Please fill all fields.');
       setMessage('');
@@ -61,16 +63,43 @@ export const ResetPasswordScreen: React.FC<ResetPasswordScreenProps> = ({ naviga
       return;
     }
 
+    if (newPassword.length < 8) {
+      setError('Password must be at least 8 characters.');
+      setMessage('');
+      return;
+    }
+
     setError('');
     setMessage('');
     setLoading(true);
 
-    setTimeout(() => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          national_id: nationalId,
+          role,
+          code: verificationCode.trim(),
+          new_password: newPassword,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || 'Something went wrong. Please try again.');
+        return;
+      }
+
+      setMessage('Password updated successfully. You can now log in.');
+      setTimeout(() => navigation.navigate('Login', { role }), 1500);
+
+    } catch (err) {
+      setError('Could not connect to server. Please try again.');
+    } finally {
       setLoading(false);
-      setMessage('Password updated. You can now log in.');
-      // Optionally navigate back to login automatically after success
-      // navigation.navigate('Login', { role });
-    }, 800);
+    }
   };
 
   return (
@@ -99,6 +128,13 @@ export const ResetPasswordScreen: React.FC<ResetPasswordScreenProps> = ({ naviga
               <AppText style={styles.subtitle}>
                 Enter the verification code and your new password to continue.
               </AppText>
+              {devCode ? (
+                <View style={{ backgroundColor: 'rgba(0,180,100,0.1)', borderRadius: 10, padding: spacing.sm, marginTop: spacing.sm, width: '100%' }}>
+                  <AppText style={{ textAlign: 'center', color: colors.status.success, fontSize: typography.sizes.sm, fontWeight: typography.weights.bold }}>
+                    Dev Code: {devCode}
+                  </AppText>
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.form}>

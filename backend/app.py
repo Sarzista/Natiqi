@@ -201,38 +201,31 @@ def login():
 
     """
     Login with database validation
-    Checks Admin, Specialist, and Patient tables based on role
+    Checks Admin, Specialist, and RegisteredUser tables based on role
     """
 
     data = request.get_json()
     national_id = data.get('national_id', '')
     password    = data.get('password', '')
     role        = data.get('role', '')
-    role_norm   = str(role or '').strip()
+    #role_norm   = str(role or '').strip()
 
     print(f"\n📥 Login attempt:")
     print(f"   ID: {national_id}")
-    print(f"   Role: {role_norm}")
-
-   
+    print(f"   Role: {role}")
 
     user = None
 
     # Find user based on role
-
-        
-    if role_norm == 'admin':
+    if role == 'admin':
         user = Admin.query.filter_by(national_id=national_id).first()
-    elif role_norm == 'specialist':
+    elif role == 'specialist':
         user = Specialist.query.filter_by(national_id=national_id).first()
-    elif role_norm in ('RegisteredUser', 'registereduser', 'registered_user'):
-        user = RegisteredUser.query.filter_by(national_id=national_id).first()
-    elif role_norm in ('patient', 'Patient'):
-        user = Patient.query.filter_by(national_id=national_id).first()
+    elif role == 'RegisteredUser':
+        user = RegisteredUser.query.filter_by(national_id=national_id).first() 
            
-    
     if not user:
-        print(f"❌ No {role_norm} found with ID: {national_id}")
+        print(f"❌ No {role} found with ID: {national_id}")
         return jsonify({'error': 'Invalid ID or password'}), 401
     
     # Check password
@@ -318,6 +311,7 @@ def register():
         payload['dev_code'] = code
     return jsonify(payload), (200 if existing else 201)
 
+##======    Verification   ======##
 
 @app.route('/auth/verify', methods=['POST'])
 def verify_account():
@@ -342,6 +336,8 @@ def verify_account():
     return jsonify({'message': 'Account verified. You can log in.'}), 200
 
 
+##======    resend-verification   ======##
+
 @app.route('/auth/resend-verification', methods=['POST'])
 def resend_verification():
     data = request.get_json() or {}
@@ -363,7 +359,86 @@ def resend_verification():
         payload['dev_code'] = code
     return jsonify(payload), 200
 
+##======    Forget Password   ======##
+@app.route('/auth/forgot-password', methods=['POST'])
+def forgot_password():
+    """Step 1: User provides their national_id + role → generate a reset code."""
+    data        = request.get_json() or {}
+    national_id = str(data.get('national_id', '') or '').strip()
+    role        = str(data.get('role', '') or '').strip()
 
+    if not national_id or not role:
+        return jsonify({'error': 'national_id and role are required'}), 400
+
+    if role == 'admin':
+        user = Admin.query.filter_by(national_id=national_id).first()
+    elif role == 'specialist':
+        user = Specialist.query.filter_by(national_id=national_id).first()
+    elif role == 'RegisteredUser':
+        user = RegisteredUser.query.filter_by(national_id=national_id).first()
+    else:
+        return jsonify({'error': 'Invalid role'}), 400
+
+    if not user:
+        # Don't reveal whether the ID exists
+        return jsonify({'error': 'No account found with this ID.'}), 404
+    
+    code    = generate_six_digit_code()
+    expires = datetime.utcnow() + timedelta(minutes=15)
+
+    user.verification_code    = code
+    user.verification_expires = expires
+    db.session.commit()
+
+    print(f"\n🔑 Password reset code for national_id={national_id}: {code}\n")
+
+    payload = {'message': 'If this ID is registered, a reset code has been generated.'}
+    if app.debug or os.environ.get('RETURN_VERIFICATION_CODE') == '1':
+        payload['dev_code'] = code
+    return jsonify(payload), 200
+
+
+##======    Reset Password   ======##
+
+@app.route('/auth/reset-password', methods=['POST'])
+def reset_password():
+    """Step 2: User provides national_id + role + code + new_password → update password."""
+    data         = request.get_json() or {}
+    national_id  = str(data.get('national_id', '') or '').strip()
+    role         = str(data.get('role', '') or '').strip()
+    code         = str(data.get('code', '') or '').strip()
+    new_password = str(data.get('new_password', '') or '')
+
+    if not all([national_id, role, code, new_password]):
+        return jsonify({'error': 'national_id, role, code, and new_password are required'}), 400
+    if len(new_password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters'}), 400
+
+    if role == 'admin':
+        user = Admin.query.filter_by(national_id=national_id).first()
+    elif role == 'specialist':
+        user = Specialist.query.filter_by(national_id=national_id).first()
+    elif role == 'RegisteredUser':
+        user = RegisteredUser.query.filter_by(national_id=national_id).first()
+    else:
+        return jsonify({'error': 'Invalid role'}), 400
+
+    if not user:
+        return jsonify({'error': 'Invalid ID or code'}), 400
+
+    if not user.verification_code or user.verification_code != code:
+        return jsonify({'error': 'Invalid or expired reset code'}), 400
+
+    if user.verification_expires and datetime.utcnow() > user.verification_expires:
+        return jsonify({'error': 'Reset code has expired. Request a new one.'}), 400
+
+    user.password             = generate_password_hash(new_password)
+    user.verification_code    = None
+    user.verification_expires = None
+    db.session.commit()
+
+    print(f"✅ Password reset for national_id={national_id}")
+    return jsonify({'message': 'Password updated successfully. You can now log in.'}), 200
 
 # ══════════════════════════════════════════════════════════
 #   ADMIN 
@@ -407,6 +482,8 @@ def add_user():
     temp_password = 'Temp@1234'
     performed_by_name = data.get('performed_by_name', 'Admin')
     performed_by_id   = data.get('performed_by_id', 'unknown')
+    tables =[Patient,Admin, Specialist, RegisteredUser]
+
 
     if gender_raw not in ('Male', 'Female', ''):
         return jsonify({'error': 'Gender must be Male or Female'}), 400
@@ -445,8 +522,11 @@ def add_user():
                 return jsonify({'error': 'Phone number is required for registered users'}), 400
             if gender_store not in ('Male', 'Female'):
                 return jsonify({'error': 'Gender is required for registered users'}), 400
-            if RegisteredUser.query.filter_by(national_id=national_id).first():
-                return jsonify({'error': 'National ID already exists'}), 409
+            
+            for table in tables:
+                if table.query.filter_by(national_id=national_id).first():
+                    return jsonify({'error': 'National ID already registered'}), 409
+        
             if RegisteredUser.query.filter_by(email=email).first():
                 return jsonify({'error': 'Email already exists'}), 409
             if RegisteredUser.query.filter_by(phone_num=phone).first():
@@ -498,6 +578,9 @@ def delete_user(national_id):
 
     if not user:
         return jsonify({'error': 'User not found'}), 404
+    
+    if role == 'Admin' and national_id == performed_by_id:
+        return jsonify({'error': 'You cannot delete your own account.'}), 403
 
     # If deleting a specialist, clean up their related records first
     # (because eeg_session.specialist_national_id is NOT NULL)
@@ -748,8 +831,12 @@ def create_eeg_session_from_window():
         return jsonify({'error': 'patient_national_id and window are required'}), 400
 
     patient = Patient.query.filter_by(national_id=patient_national_id).first()
-    if not patient:
+    registered_user = RegisteredUser.query.filter_by(national_id=patient_national_id).first()
+
+    if not patient and not registered_user:
         return jsonify({'error': 'Patient not found'}), 404
+
+    patient_id_to_use = patient_national_id  
 
     specialist_row = None
     if specialist_national_id:
@@ -770,7 +857,7 @@ def create_eeg_session_from_window():
     m = _current_production_model()
     try:
         row = EEGSession(
-            patient_national_id=patient.national_id,
+            patient_national_id=patient_id_to_use,
             specialist_national_id=(specialist_row.national_id if specialist_row else None),
             model_id=(m.model_id if m else None),
             start_time=now,
@@ -872,14 +959,17 @@ def add_patient():
     specialist_id = data.get('specialist_id', '').strip()
     performed_by_name = data.get('performed_by_name', 'Specialist')
     performed_by_id   = data.get('performed_by_id', 'unknown')
+    tables =[Patient,Admin, Specialist, RegisteredUser]
 
     if not all([national_id, room_number, name, dob]):
         return jsonify({'error': 'Room number, name, National ID, and DOB are required'}), 400
     if len(room_number) > 10:
         return jsonify({'error': 'Room number must be at most 10 characters'}), 400
 
-    if Patient.query.filter_by(national_id=national_id).first():
-        return jsonify({'error': 'National ID already registered'}), 409
+    for table in tables:
+        if table.query.filter_by(national_id=national_id).first():
+            return jsonify({'error': 'National ID already registered'}), 409
+        
     if Patient.query.filter_by(room_number=room_number).first():
         return jsonify({'error': 'Room number already in use'}), 409
 
@@ -924,11 +1014,30 @@ def delete_patient(national_id):
     if not patient:
         return jsonify({'error': 'Patient not found'}), 404
 
-    db.session.delete(patient)
-    db.session.commit()
-    print(f"🗑️ Deleted patient: {national_id}")
-    write_system_log(performed_by_name, performed_by_id, f'Deleted patient: {patient.name} — ID: {national_id}', role='Specialist')
-    return jsonify({'message': 'Patient deleted successfully'}), 200
+    try:
+        # Delete alerts linked to this patient's sessions first
+        sessions = EEGSession.query.filter_by(patient_national_id=national_id).all()
+        for session in sessions:
+            Alert.query.filter_by(alert_session_id=session.session_id).delete()
+
+        # Delete the sessions themselves
+        EEGSession.query.filter_by(patient_national_id=national_id).delete()
+
+        # Delete patient settings
+        PatientSettings.query.filter_by(user_national_id=national_id).delete()
+
+        # Now safe to delete the patient
+        db.session.delete(patient)
+        db.session.commit()
+
+        print(f"🗑️ Deleted patient: {national_id}")
+        write_system_log(performed_by_name, performed_by_id, f'Deleted patient: {patient.name} — ID: {national_id}', role='Specialist')
+        return jsonify({'message': 'Patient deleted successfully'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        print(f"❌ Delete patient error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 ##======    Specialist: Edit patient   ======##
 @app.route('/specialist/patients/<national_id>', methods=['PUT'])
@@ -1156,12 +1265,13 @@ def patient_change_password():
     if not national_id or not current_password or not new_password:
         return jsonify({'error': 'national_id, current_password, and new_password are required'}), 400
 
-    user = RegisteredUser.query.filter_by(national_id=national_id).first()
-    patient = Patient.query.filter_by(national_id=national_id).first()
-    if not user and not patient:
-        return jsonify({'error': 'User not found'}), 404
+    user       = RegisteredUser.query.filter_by(national_id=national_id).first()
+    specialist = Specialist.query.filter_by(national_id=national_id).first()
+    admin      = Admin.query.filter_by(national_id=national_id).first()
 
-    target = user if user else patient
+    target = user  or specialist or admin
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
     if not check_password_hash(target.password, current_password):
         return jsonify({'error': 'Current password is incorrect'}), 403
     if len(new_password) < 8:

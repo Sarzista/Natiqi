@@ -105,7 +105,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ navigation, route })
   };
 
   const handlePhoneChange = (text: string) => {
-    const digitsOnly = text.replace(/\D/g, '').slice(0, 15);
+    const digitsOnly = text.replace(/\D/g, '').slice(0, 10);
+    if (digitsOnly.length > 1 && !digitsOnly.startsWith('05')) return;
     setPhone(digitsOnly);
   };
 
@@ -113,9 +114,18 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ navigation, route })
     setName(toTitleCaseWords(text));
   };
 
+  const isValidEmail = (email: string) =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
   const getSignUpValidationError = (): string | null => {
     if (!name.trim() || !gender || !nationalId || !phone || !email || !password || !confirmPassword) {
       return t('signup.errorFillAll');
+    }
+    if (!isValidEmail(email.trim())) {
+      return 'Please enter a valid email address.';
+    }
+    if (phone.length !== 10 || !phone.startsWith('05')) {
+      return 'Phone number must be 10 digits and start with 05.';
     }
     if (password !== confirmPassword) {
       return t('signup.errorPasswordMismatch');
@@ -378,7 +388,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ navigation, route })
                       textAlignDigits,
                       focusedField === 'phone' && styles.inputFocused,
                     ]}
-                    placeholder={t('signup.phonePlaceholder')}
+                    placeholder="05XXXXXXXX"
                     placeholderTextColor={colors.text.muted}
                     value={phone}
                     onChangeText={handlePhoneChange}

@@ -12,6 +12,7 @@ export type AddUserPayload = {
   national_id: string;
   name: string;
   email: string;
+  phone?: string;
   role: 'Admin' | 'Specialist';
   gender: 'Male' | 'Female';
   performed_by_name: string;

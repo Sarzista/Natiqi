@@ -8,7 +8,7 @@ export type RootStackParamList = {
   Landing: undefined;
   Login: { role: UserRole };
   ForgotPassword: { role: UserRole };
-  ResetPassword: { role: UserRole; nationalId?: string };
+  ResetPassword: { role: UserRole; nationalId?: string; devCode?: string };
   SignUp: { role: UserRole };
   VerifyAccount: {
     role: UserRole;

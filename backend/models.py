@@ -21,6 +21,8 @@ class Admin(db.Model):
     phone        = db.Column(db.String(15))
     gender       = db.Column(db.String(10), nullable=True)
     role         = db.Column(db.String(20), default='admin')
+    verification_code = db.Column(db.String(10), nullable=True)
+    verification_expires = db.Column(db.DateTime, nullable=True)
 
     # Relationships
     models       = db.relationship('Model', backref='admin', lazy=True)
@@ -48,6 +50,8 @@ class Specialist(db.Model):
     phone        = db.Column(db.String(15))
     gender       = db.Column(db.String(10), nullable=True)
     role         = db.Column(db.String(20), default='specialist')
+    verification_code = db.Column(db.String(10), nullable=True)
+    verification_expires = db.Column(db.DateTime, nullable=True)
 
     # Relationships
     patients     = db.relationship('Patient',    backref='specialist', lazy=True)

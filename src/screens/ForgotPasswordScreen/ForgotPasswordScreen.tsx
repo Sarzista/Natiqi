@@ -25,6 +25,7 @@ import { colors, spacing, typography, gradientTextBgShiftKeyframes } from '../..
 import { RootStackParamList } from '../../types/navigation';
 import { UserRole } from '../../types';
 import { useLanguage } from '../../context/LanguageContext';
+import { API_BASE } from '../../config/apiBase';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 600;
@@ -43,6 +44,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [devCode, setDevCode] = useState('');
   const { t, isRTL } = useLanguage();
 
   const role: UserRole = route.params?.role ?? 'RegisteredUser';
@@ -57,7 +59,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
     setNationalId(digitsOnly);
   };
 
-  const handleSendCode = () => {
+  const handleSendCode = async () => {
     if (!nationalId.trim()) {
       setError(t('forgotPassword.errorEmpty'));
       setMessage('');
@@ -68,120 +70,137 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
     setMessage('');
     setLoading(true);
 
-    setTimeout(() => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ national_id: nationalId.trim(), role }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || 'Something went wrong. Please try again.');
+        return;
+      }
+
+      navigation.navigate('ResetPassword', { role, nationalId: nationalId.trim(),devCode: data.dev_code || '',});
+
+    } catch (err) {
+      setError('Could not connect to server. Please try again.');
+    } finally {
       setLoading(false);
-      navigation.navigate('ResetPassword', { role, nationalId });
-    }, 500);
+    }
   };
 
-  return (
-    <View style={styles.container}>
-      <AppBackground />
-      <AppHeader onLogoPress={() => navigation.navigate('Landing')} />
+    return (
+      <View style={styles.container}>
+        <AppBackground />
+        <AppHeader onLogoPress={() => navigation.navigate('Landing')} />
 
-      <KeyboardAvoidingView
-        style={styles.keyboardView}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          showsHorizontalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
+        <KeyboardAvoidingView
+          style={styles.keyboardView}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
-          <View
-            style={[
-              styles.glassCard,
-              isRTL && Platform.OS === 'web' ? ({ direction: 'rtl' } as object) : null,
-            ]}
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
           >
-            <View style={styles.panelHeader}>
-              <AppText style={styles.title}>{t('forgotPassword.heading')}</AppText>
-              <AppText style={styles.subtitle}>{t('forgotPassword.instructions')}</AppText>
-            </View>
-
-            <View style={styles.form}>
-              <View style={styles.inputContainer}>
-                <AppText
-                  style={[
-                    styles.label,
-                    isRTL && styles.labelRTL,
-                    focusedField === 'id' && styles.labelFocused,
-                  ]}
-                >
-                  {t('forgotPassword.nationalIdLabel')}
-                </AppText>
-                <TextInput
-                  style={[
-                    styles.input,
-                    nationalIdInputStyle,
-                    focusedField === 'id' && styles.inputFocused,
-                  ]}
-                  placeholder={t('forgotPassword.nationalIdPlaceholder')}
-                  placeholderTextColor={colors.text.muted}
-                  value={nationalId}
-                  onChangeText={handleNationalIdChange}
-                  keyboardType="number-pad"
-                  maxLength={10}
-                  autoCapitalize="none"
-                  autoComplete="off"
-                  onFocus={() => setFocusedField('id')}
-                  onBlur={() => setFocusedField((prev) => (prev === 'id' ? null : prev))}
-                />
+            <View
+              style={[
+                styles.glassCard,
+                isRTL && Platform.OS === 'web' ? ({ direction: 'rtl' } as object) : null,
+              ]}
+            >
+              <View style={styles.panelHeader}>
+                <AppText style={styles.title}>{t('forgotPassword.heading')}</AppText>
+                <AppText style={styles.subtitle}>{t('forgotPassword.instructions')}</AppText>
               </View>
 
-              {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
-              {message ? <AppText style={styles.successText}>{message}</AppText> : null}
+              <View style={styles.form}>
+                <View style={styles.inputContainer}>
+                  <AppText
+                    style={[
+                      styles.label,
+                      isRTL && styles.labelRTL,
+                      focusedField === 'id' && styles.labelFocused,
+                    ]}
+                  >
+                    {t('forgotPassword.nationalIdLabel')}
+                  </AppText>
+                  <TextInput
+                    style={[
+                      styles.input,
+                      nationalIdInputStyle,
+                      focusedField === 'id' && styles.inputFocused,
+                    ]}
+                    placeholder={t('forgotPassword.nationalIdPlaceholder')}
+                    placeholderTextColor={colors.text.muted}
+                    value={nationalId}
+                    onChangeText={handleNationalIdChange}
+                    keyboardType="number-pad"
+                    maxLength={10}
+                    autoCapitalize="none"
+                    autoComplete="off"
+                    onFocus={() => setFocusedField('id')}
+                    onBlur={() => setFocusedField((prev) => (prev === 'id' ? null : prev))}
+                  />
+                </View>
 
-              <AnimatedButton
-                title={t('forgotPassword.sendCode')}
-                onPress={handleSendCode}
-                disabled={loading}
-                loading={loading}
-              />
+                {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
+                {message ? <AppText style={styles.successText}>{message}</AppText> : null}
 
-              <TouchableOpacity
-                style={styles.backToLogin}
-                onPress={() => navigation.navigate('Login', { role })}
-                activeOpacity={0.7}
-              >
-                <AppText style={styles.backToLoginText}>{t('forgotPassword.backToLogin')}</AppText>
-              </TouchableOpacity>
+                <AnimatedButton
+                  title={t('forgotPassword.sendCode')}
+                  onPress={handleSendCode}
+                  disabled={loading}
+                  loading={loading}
+                />
+
+                <TouchableOpacity
+                  style={styles.backToLogin}
+                  onPress={() => navigation.navigate('Login', { role })}
+                  activeOpacity={0.7}
+                >
+                  <AppText style={styles.backToLoginText}>{t('forgotPassword.backToLogin')}</AppText>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+          </ScrollView>
+        </KeyboardAvoidingView>
 
-      <AppFooter>
-        <View style={styles.logosContainer}>
-          <TouchableOpacity
-            style={styles.iauLogo}
-            onPress={() => Linking.openURL('https://www.iau.edu.sa/en/about-us')}
-            activeOpacity={0.7}
-          >
-            <Image
-              source={require('../../../assets/iau-university.png')}
-              style={styles.partnerLogoImage}
-              resizeMode="contain"
-            />
-          </TouchableOpacity>
-          <View style={styles.logoDivider} />
-          <TouchableOpacity
-            style={styles.vision2030Logo}
-            onPress={() => Linking.openURL('https://www.vision2030.gov.sa/en')}
-            activeOpacity={0.7}
-          >
-            <Image
-              source={require('../../../assets/2030-vision.png')}
-              style={styles.partnerLogoImage}
-              resizeMode="contain"
-            />
-          </TouchableOpacity>
-        </View>
-      </AppFooter>
-    </View>
-  );
-};
+        <AppFooter>
+          <View style={styles.logosContainer}>
+            <TouchableOpacity
+              style={styles.iauLogo}
+              onPress={() => Linking.openURL('https://www.iau.edu.sa/en/about-us')}
+              activeOpacity={0.7}
+            >
+              <Image
+                source={require('../../../assets/iau-university.png')}
+                style={styles.partnerLogoImage}
+                resizeMode="contain"
+              />
+            </TouchableOpacity>
+            <View style={styles.logoDivider} />
+            <TouchableOpacity
+              style={styles.vision2030Logo}
+              onPress={() => Linking.openURL('https://www.vision2030.gov.sa/en')}
+              activeOpacity={0.7}
+            >
+              <Image
+                source={require('../../../assets/2030-vision.png')}
+                style={styles.partnerLogoImage}
+                resizeMode="contain"
+              />
+            </TouchableOpacity>
+          </View>
+        </AppFooter>
+      </View>
+    );
+  };
 
 const styles = StyleSheet.create({
   container: {
