@@ -151,15 +151,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </View>
 
       <TouchableOpacity
-        style={[styles.logoutButton, loggingOut && styles.logoutButtonDisabled]}
+        style={[styles.navItem, styles.navFooterItem, loggingOut && styles.navItemDisabled]}
         onPress={handleLogout}
         activeOpacity={0.85}
         disabled={loggingOut}
         accessibilityRole="button"
         accessibilityLabel="Log out"
       >
-        <Ionicons name="log-out-outline" size={22} color={colors.status.error} />
-        <AppText style={styles.logoutLabel}>{loggingOut ? 'Signing out…' : 'Log out'}</AppText>
+        <View style={styles.navItemInner}>
+          <Ionicons name="log-out-outline" size={22} color={colors.text.secondary} />
+          <AppText style={styles.navLabel}>{loggingOut ? 'Signing out…' : 'Log out'}</AppText>
+        </View>
       </TouchableOpacity>
     </View>
   );
@@ -246,25 +248,11 @@ const styles = StyleSheet.create({
     color: colors.logo.oceanGreen,
     fontWeight: typography.weights.bold,
   },
-  logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
+  navFooterItem: {
     marginTop: spacing.lg,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.35)',
-    backgroundColor: 'rgba(239, 68, 68, 0.06)',
   },
-  logoutButtonDisabled: {
+  navItemDisabled: {
     opacity: 0.6,
-  },
-  logoutLabel: {
-    fontSize: typography.sizes.base,
-    fontWeight: typography.weights.semibold,
-    color: colors.status.error,
   },
 });
 

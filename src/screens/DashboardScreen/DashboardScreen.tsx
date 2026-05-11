@@ -4,7 +4,7 @@
  * - Clinician/Admin: patient overview list
  * - Patient: personal EEG communication dashboard
  */
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -18,7 +18,12 @@ import {
   Switch,
   Animated,
   Easing,
+  Modal,
+  Pressable,
+  Image,
 } from 'react-native';
+import { Linking } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { DimensionValue } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AnimatedRe, {
@@ -27,7 +32,9 @@ import AnimatedRe, {
   useAnimatedStyle,
   withRepeat,
   withTiming,
+  type SharedValue,
 } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Svg, { Path, Polyline, Circle } from 'react-native-svg';
@@ -48,17 +55,135 @@ import { colors, spacing, typography } from '../../theme';
 import { getPatients, addPatient, deletePatient } from '../../services/patientService';
 import { getUsers, addUser, deleteUser } from '../../services/userService';
 import { fetchCurrentModel, saveCurrentModel } from '../../services/modelAdminService';
-import { predictEegWindow, type EegPredictWindowResponse } from '../../services/eegModelService';
+import { predictEegWindow, predictLiveDemo, type EegPredictWindowResponse } from '../../services/eegModelService';
 import { fetchModelArtifactStatus, type ModelArtifactStatus } from '../../services/modelArtifactService';
-import { fetchSpecialistSessions, createEegSessionFromWindow, type EegSessionRow } from '../../services/sessionService';
+import { createNotificationEvent } from '../../services/notificationService';
+import {
+  fetchSpecialistSessions,
+  createEegSessionFromWindow,
+  createLiveDemoSession,
+  fetchLiveDemoSessionReport,
+  liveDemoSessionReportCsvUrl,
+  liveDemoSessionReportXlsxUrl,
+  type LiveDemoSessionReport,
+  type EegSessionRow,
+} from '../../services/sessionService';
 import {
   fetchPatientSettings,
   savePatientSettings,
   changePatientPassword,
-  patientSessionsExportUrl,
   type PatientSettings,
 } from '../../services/patientSettingsService';
 import { API_BASE } from '../../config/apiBase';
+import { Audio } from 'expo-av';
+
+/** Mirrors backend `_notification_word_enabled` (Alerts & safety toggles). */
+function patientNotifyToggleOn(settings: PatientSettings, detectedWord: string): boolean {
+  const w = detectedWord.trim();
+  if (!w || w === '—') return false;
+  if (w === 'جوع') return settings.notify_hunger;
+  if (w === 'عطش') return settings.notify_thirst;
+  if (w === 'انذار' || w === 'إنذار') return settings.notify_alarm;
+  if (w === 'حمام') return settings.notify_bathroom;
+  if (w === 'دواء') return settings.notify_medicine;
+  return false;
+}
+
+/** Bell rules: toggled word + confidence ≥ saved minimum (same as `/notifications/event`). */
+function patientBellEligible(settings: PatientSettings | null | undefined, detectedWord: string, confidence: number): boolean {
+  if (!settings) return true;
+  if (!patientNotifyToggleOn(settings, detectedWord)) return false;
+  const minc = Number(settings.min_confidence);
+  if (!Number.isFinite(minc)) return true;
+  return confidence >= minc;
+}
+
+const EEG_HIGH_CONF_ALERT_THRESHOLD = 0.7;
+const EEG_ALERT_ICON_SLOT = 56;
+
+/** Care sentence under confidence when ≥70% (live demo + full Saved_Model vocab; alarm accepts إنذار/انذار). */
+function liveDemoHighConfSentenceAr(arRaw: string): string {
+  const ar = (arRaw || '').trim();
+  const map: Record<string, string> = {
+    جوع: 'يبدو أن المريض يشعر بالجوع',
+    عطش: 'المريض بحاجة إلى شرب الماء',
+    حمام: 'توجد حاجة لاستخدام دورة المياه',
+    دواء: 'المريض بحاجة إلى تناول الدواء',
+    إنذار: 'توجد حالة طارئة تستدعي الانتباه',
+    انذار: 'توجد حالة طارئة تستدعي الانتباه',
+  };
+  return map[ar] ?? '';
+}
+
+/** English gloss for `DEMO_CLASS_NAMES` in `backend/ml/eeg_rf_4word_demo.py`. */
+function eegDemoWordEnglish(arRaw: string): string {
+  const ar = (arRaw || '').trim();
+  const map: Record<string, string> = {
+    جوع: 'Hunger',
+    عطش: 'Thirst',
+    حمام: 'Bathroom',
+    دواء: 'Medicine',
+    إنذار: 'Alarm',
+    انذار: 'Alarm',
+  };
+  return map[ar] ?? '';
+}
+
+type EegHighConfAlertEvent = { ts: number; confidence: number };
+
+const EEG_HIGH_CONF_ALERT_LOG_KEY = 'eeg:high_conf_alert_events';
+const EEG_HIGH_CONF_LOG_KEEP_MS = 10 * 24 * 60 * 60 * 1000;
+const EEG_HIGH_CONF_LOG_MAX = 3000;
+
+function startOfLocalDayMs(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+async function readHighConfAlertsTodayCount(): Promise<number> {
+  const startDay = startOfLocalDayMs();
+  try {
+    const raw = await AsyncStorage.getItem(EEG_HIGH_CONF_ALERT_LOG_KEY);
+    const arr: EegHighConfAlertEvent[] = raw ? JSON.parse(raw) : [];
+    return arr.filter(
+      (e) =>
+        e &&
+        typeof e.ts === 'number' &&
+        typeof e.confidence === 'number' &&
+        e.confidence >= EEG_HIGH_CONF_ALERT_THRESHOLD &&
+        e.ts >= startDay,
+    ).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Append one ≥70% alert and return how many such events occurred since local midnight. */
+async function appendHighConfAlertEvent(confidence: number): Promise<number> {
+  const now = Date.now();
+  const startDay = startOfLocalDayMs();
+  let arr: EegHighConfAlertEvent[] = [];
+  try {
+    const raw = await AsyncStorage.getItem(EEG_HIGH_CONF_ALERT_LOG_KEY);
+    arr = raw ? (JSON.parse(raw) as EegHighConfAlertEvent[]) : [];
+  } catch {
+    arr = [];
+  }
+  arr = arr.filter((e) => e && typeof e.ts === 'number' && now - e.ts <= EEG_HIGH_CONF_LOG_KEEP_MS);
+  arr.push({ ts: now, confidence });
+  if (arr.length > EEG_HIGH_CONF_LOG_MAX) {
+    arr = arr.slice(-EEG_HIGH_CONF_LOG_MAX);
+  }
+  await AsyncStorage.setItem(EEG_HIGH_CONF_ALERT_LOG_KEY, JSON.stringify(arr));
+  return arr.filter(
+    (e) =>
+      typeof e.confidence === 'number' &&
+      e.confidence >= EEG_HIGH_CONF_ALERT_THRESHOLD &&
+      e.ts >= startDay,
+  ).length;
+}
+
 const { width, height } = Dimensions.get('window');
 const isSmallScreen = width < 960;
 /** Match Landing hero brand text alignment (center vs start/end). */
@@ -140,9 +265,228 @@ const MenuBurgerIcon: React.FC<{ size?: number; color?: string }> = ({
 
 type DashboardScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Dashboard'>;
 
+function sessionListTopWord(s: EegSessionRow): string {
+  return (s.top_predicted_word ?? s.detected_word) || '—';
+}
+
+function sessionListTopWordAvgAcc(s: EegSessionRow): string {
+  if (s.top_predicted_word_avg_confidence != null) {
+    return `${Math.round(s.top_predicted_word_avg_confidence * 100)}%`;
+  }
+  if (s.confidence_level != null) {
+    return `${Math.round(s.confidence_level * 100)}%`;
+  }
+  return '—';
+}
+
+/** When the session report was saved: prefer `end_time`, else `start_time` (24h). */
+function sessionListSavedDateTime(s: EegSessionRow): string {
+  const iso = (s.end_time || s.start_time || '').trim();
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return '—';
+  }
+}
+
+/** Only `0`, `0.`, `0.xx` (up to 2 decimals after `.`), or exactly `1`. */
+function sanitizeMinConfidenceDraft(raw: string): string {
+  let t = raw.replace(/[^0-9.,]/g, '').replace(/,/g, '.');
+  const dot = t.indexOf('.');
+  if (dot !== -1) {
+    t = t.slice(0, dot + 1) + t.slice(dot + 1).replace(/\./g, '');
+  }
+  if (t.startsWith('.')) {
+    t = `0${t}`;
+  }
+  if (t === '') return '';
+
+  if (t.startsWith('1')) {
+    return '1';
+  }
+
+  if (!t.startsWith('0')) {
+    return '';
+  }
+
+  t = t.replace(/^0+(?=\.|$)/, '0');
+
+  if (t === '0') return '0';
+  if (t[1] === '.') {
+    const frac = t.slice(2).replace(/[^0-9]/g, '').slice(0, 2);
+    return `0.${frac}`;
+  }
+  return '0';
+}
+
+function minConfidenceNumberToDraft(n: number): string {
+  if (!Number.isFinite(n)) return '0';
+  return String(Number(n.toFixed(2)));
+}
+
+function coerceMinConfidenceFromApi(raw: unknown, fallback: number): number {
+  const n = typeof raw === 'number' ? raw : parseFloat(String(raw ?? ''));
+  if (!Number.isFinite(n) || n < 0 || n > 1) return fallback;
+  return n;
+}
+
+/** Returns null if empty, incomplete, or outside [0, 1]. */
+function parseMinConfidenceForSave(raw: string): number | null {
+  const t = raw.trim();
+  if (t === '' || t === '.') return null;
+  if (t === '1') return 1;
+  if (t.startsWith('1')) return null;
+  const v = Number(t);
+  if (!Number.isFinite(v) || v < 0 || v > 1) return null;
+  return v;
+}
+
+type EegDecodedWordEvent = { ts: number; word: string };
+
+const EEG_DECODED_WORD_EVENTS_KEY = 'eeg:decoded:word_events';
+
+function computeWeeklyTopWord(events: EegDecodedWordEvent[]): { word: string; count: number } {
+  const now = Date.now();
+  const cutoff = now - 7 * 24 * 60 * 60 * 1000;
+  const recent = events.filter(
+    (e) =>
+      e &&
+      typeof e.ts === 'number' &&
+      e.ts >= cutoff &&
+      typeof e.word === 'string' &&
+      e.word.trim().length > 0,
+  );
+  const counts = new Map<string, number>();
+  for (const e of recent) {
+    const w = e.word.trim();
+    counts.set(w, (counts.get(w) || 0) + 1);
+  }
+  let bestWord = '';
+  let bestN = 0;
+  for (const [w, n] of counts) {
+    if (n > bestN) {
+      bestN = n;
+      bestWord = w;
+    }
+  }
+  return { word: bestWord, count: bestN };
+}
+
+type SettingsParticleSpec = {
+  size: number;
+  color: string;
+  top?: `${number}%`;
+  left?: `${number}%`;
+  right?: `${number}%`;
+  bottom?: `${number}%`;
+};
+
+const SETTINGS_PARTICLE_SPECS: SettingsParticleSpec[] = [
+  { top: '4%', left: '3%', size: 88, color: 'rgba(34,197,94,0.2)' },
+  { top: '36%', right: '5%', size: 108, color: 'rgba(37,99,235,0.16)' },
+  { bottom: '10%', left: '12%', size: 96, color: 'rgba(56,189,248,0.14)' },
+  { top: '58%', left: '6%', size: 72, color: 'rgba(16,185,129,0.15)' },
+  { top: '18%', right: '26%', size: 54, color: 'rgba(59,130,246,0.12)' },
+  { bottom: '20%', right: '10%', size: 78, color: 'rgba(34,197,94,0.1)' },
+];
+
+function SettingsAmbientParticle({
+  spec,
+  progress,
+  index,
+}: {
+  spec: SettingsParticleSpec;
+  progress: SharedValue<number>;
+  index: number;
+}) {
+  const animatedStyle = useAnimatedStyle(() => {
+    const phase = progress.value * Math.PI * 2 + index * 1.05;
+    return {
+      opacity: 0.55 + 0.45 * Math.sin(phase),
+      transform: [{ scale: 1 + 0.07 * Math.sin(phase * 0.88) }],
+    };
+  });
+  const { size, color, top, left, right, bottom } = spec;
+  return (
+    <AnimatedRe.View
+      style={[
+        {
+          position: 'absolute',
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          top,
+          left,
+          right,
+          bottom,
+          backgroundColor: color,
+        },
+        animatedStyle,
+      ]}
+    />
+  );
+}
+
+function SettingsAmbientParticles() {
+  const progress = useSharedValue(0);
+  React.useEffect(() => {
+    progress.value = withRepeat(
+      withTiming(1, { duration: 14000, easing: ReEasing.inOut(ReEasing.ease) }),
+      -1,
+      true,
+    );
+  }, [progress]);
+  return (
+    <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+      {SETTINGS_PARTICLE_SPECS.map((spec, index) => (
+        <SettingsAmbientParticle key={index} spec={spec} progress={progress} index={index} />
+      ))}
+    </View>
+  );
+}
+
+/** Gloss + soft animated particles behind settings forms (matches global header glass language). */
+function SettingsPageGlassCard({ children }: { children: React.ReactNode }) {
+  const shimmer = useSharedValue(0);
+  React.useEffect(() => {
+    shimmer.value = withRepeat(
+      withTiming(1, { duration: 9000, easing: ReEasing.inOut(ReEasing.ease) }),
+      -1,
+      true,
+    );
+  }, [shimmer]);
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: 0.26 + 0.1 * Math.sin(shimmer.value * Math.PI * 2),
+  }));
+  return (
+    <View style={[styles.adminTableCard, styles.adminFullWidthCard, styles.settingsGlassShell]}>
+      <View style={styles.settingsParticlesWrap} pointerEvents="none">
+        <SettingsAmbientParticles />
+      </View>
+      <AnimatedRe.View style={[styles.settingsGlassShimmer, shimmerStyle]} pointerEvents="none">
+        <LinearGradient
+          colors={['rgba(0,166,81,0.16)', 'rgba(27,54,93,0.24)', 'rgba(0,166,81,0.14)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{ flex: 1 }}
+        />
+      </AnimatedRe.View>
+      <View style={styles.settingsGlassInner}>{children}</View>
+    </View>
+  );
+}
+
 export const DashboardScreen: React.FC = () => {
   const navigation = useNavigation<DashboardScreenNavigationProp>();
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const { t, isRTL } = useLanguage();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
@@ -187,11 +531,30 @@ export const DashboardScreen: React.FC = () => {
   const [newPatientMessage, setNewPatientMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [deleteUserError, setDeleteUserError] = useState<string | null>(null);
   const [recSessions, setRecSessions] = useState<any[]>([]);
+  const [recReportOpen, setRecReportOpen] = useState(false);
+  const [recReportLoading, setRecReportLoading] = useState(false);
+  const [recReportError, setRecReportError] = useState<string | null>(null);
+  const [recReport, setRecReport] = useState<LiveDemoSessionReport | null>(null);
 
   // ── EEG model inference (Patient/RegisteredUser dashboard) ──
-  const [eegPredictLoading, setEegPredictLoading] = useState(false);
   const [eegPredictError, setEegPredictError] = useState<string | null>(null);
   const [eegPredictResult, setEegPredictResult] = useState<EegPredictWindowResponse | null>(null);
+  /** Tap predicted word to toggle Arabic / English when a gloss exists. */
+  const [eegPredictWordShowEn, setEegPredictWordShowEn] = useState(false);
+  const [eegLiveRunning, setEegLiveRunning] = useState(false);
+  const eegLiveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [eegLiveTimerLabel, setEegLiveTimerLabel] = useState('00:00:00');
+  const eegLiveTimerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const eegLiveStartedAtRef = useRef<number | null>(null);
+  const [eegLiveSessionDecodedCount, setEegLiveSessionDecodedCount] = useState(0);
+  const [eegDecodedWeekCount, setEegDecodedWeekCount] = useState(0);
+  const [eegHighConfAlertsTodayCount, setEegHighConfAlertsTodayCount] = useState(0);
+  const [eegWeeklyTopWord, setEegWeeklyTopWord] = useState<{ word: string; count: number }>({ word: '—', count: 0 });
+  const [eegLiveAvgConfidence, setEegLiveAvgConfidence] = useState(0);
+  const eegLiveConfSumRef = useRef(0);
+  const eegLiveEventsRef = useRef<Array<{ event_time: string; detected_word: string; confidence: number }>>([]);
+  const eegAlertSoundRef = useRef<Audio.Sound | null>(null);
+  const EEG_DECODED_TS_KEY = 'eeg:decoded:timestamps';
 
   // ── Admin model artifact status + test inference ──
   const [modelArtifact, setModelArtifact] = useState<ModelArtifactStatus | null>(null);
@@ -211,6 +574,21 @@ export const DashboardScreen: React.FC = () => {
   const [patientSettingsLoading, setPatientSettingsLoading] = useState(false);
   const [patientSettingsSaving, setPatientSettingsSaving] = useState(false);
   const [patientSettingsMessage, setPatientSettingsMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  const [minConfidenceDraft, setMinConfidenceDraft] = useState('');
+  const patientSettingsFetchAbortRef = useRef<AbortController | null>(null);
+  const patientSettingsRef = useRef<PatientSettings | null>(null);
+  const minConfidenceDraftRef = useRef('');
+  const patientSettingsAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedulePatientSettingsAutosaveRef = useRef<() => void>(() => {});
+  const prevRecipientSidebarKeyRef = useRef<SidebarItemKey | undefined>(undefined);
+  const prevSpecialistSidebarKeyRef = useRef<SidebarItemKey | undefined>(undefined);
+
+  useEffect(() => {
+    patientSettingsRef.current = patientSettings;
+  }, [patientSettings]);
+  useEffect(() => {
+    minConfidenceDraftRef.current = minConfidenceDraft;
+  }, [minConfidenceDraft]);
 
   // Change password form (patient)
   const [currentPassword, setCurrentPassword] = useState('');
@@ -237,6 +615,13 @@ export const DashboardScreen: React.FC = () => {
   const [profileEmail,   setProfileEmail]   = useState(user?.email ?? '');
   const [profilePhone, setProfilePhone] = useState(user?.phone ?? (user as any)?.phone_num ?? '');
   const [profileMessage, setProfileMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    setProfileName(user.name ?? '');
+    setProfileEmail(user.email ?? '');
+    setProfilePhone(user.phone ?? '');
+  }, [user?.id, user?.name, user?.email, user?.phone]);
 
   const initialSidebarItem: SidebarItemKey =
     user?.role === 'admin'
@@ -265,6 +650,11 @@ export const DashboardScreen: React.FC = () => {
   const onRefresh = () => {
     setRefreshing(true);
     loadPatients();
+    if ((user?.role ?? 'RegisteredUser') === 'RegisteredUser') {
+      readHighConfAlertsTodayCount().then(setEegHighConfAlertsTodayCount).catch(() => undefined);
+      getDecodedWeekCount().then(setEegDecodedWeekCount).catch(() => undefined);
+      refreshWeeklyWordStats().catch(() => undefined);
+    }
   };
 
   const handlePhoneChange = (text: string) => {
@@ -393,73 +783,129 @@ export const DashboardScreen: React.FC = () => {
     }
   };
 
-  const handleSaveProfile = async () => {
-    const name  = profileName.trim();
+  const profileAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const performSaveProfile = useCallback(
+    async (silent: boolean): Promise<boolean> => {
+      const name = profileName.trim();
+      const email = profileEmail.trim();
+      if (!silent) setProfileMessage(null);
+
+      if (!name || !email) {
+        if (!silent) {
+          setProfileMessage({ type: 'error', text: 'Name and email are required.' });
+        }
+        return false;
+      }
+      if (!isValidEmail(email)) {
+        if (!silent) {
+          setProfileMessage({ type: 'error', text: 'Please enter a valid email address.' });
+        }
+        return false;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/profile/update`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            national_id: user?.id,
+            role: user?.role,
+            name,
+            email,
+            phone: profilePhone.trim(),
+          }),
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || 'Update failed');
+        const u = result.user as
+          | { id?: string; name?: string; email?: string; phone?: string; nationalId?: string }
+          | undefined;
+        if (u && user) {
+          const nextName = typeof u.name === 'string' && u.name.trim() ? u.name.trim() : name;
+          const nextEmail = typeof u.email === 'string' && u.email.trim() ? u.email.trim() : email;
+          const apiPhone = u.phone != null ? String(u.phone).trim() : '';
+          const nextPhone = apiPhone || profilePhone.trim();
+          updateUser({
+            name: nextName,
+            email: nextEmail,
+            ...(nextPhone ? { phone: nextPhone } : {}),
+          });
+          setProfileName(nextName);
+          setProfileEmail(nextEmail);
+          if (nextPhone) setProfilePhone(nextPhone);
+        }
+        if (!silent) {
+          setProfileMessage({ type: 'success', text: 'Profile updated successfully.' });
+        } else {
+          setProfileMessage(null);
+        }
+        return true;
+      } catch (err: any) {
+        setProfileMessage({ type: 'error', text: err.message });
+        return false;
+      }
+    },
+    [profileName, profileEmail, profilePhone, user, updateUser],
+  );
+
+  const flushProfileAutosave = useCallback(async () => {
+    if (profileAutosaveTimerRef.current) {
+      clearTimeout(profileAutosaveTimerRef.current);
+      profileAutosaveTimerRef.current = null;
+    }
+    if (!user?.id) return;
+    const name = profileName.trim();
     const email = profileEmail.trim();
-    setProfileMessage(null);
+    const phone = profilePhone.trim();
+    const dirty =
+      name !== (user.name ?? '').trim() ||
+      email !== (user.email ?? '').trim() ||
+      phone !== (user.phone ?? '').trim();
+    if (!dirty) return;
+    await performSaveProfile(true);
+  }, [performSaveProfile, user?.id, user?.name, user?.email, user?.phone, profileName, profileEmail, profilePhone]);
 
-    if (!name || !email) {
-      setProfileMessage({ type: 'error', text: 'Name and email are required.' });
-      return;
-    }
-    if (!isValidEmail(email)) {
-      setProfileMessage({ type: 'error', text: 'Please enter a valid email address.' });
-      return;
-    }
+  useEffect(() => {
+    if (!user?.id) return;
+    const onProfileSettings =
+      activeSidebarItem === 'rec-settings' || activeSidebarItem === 'spec-settings';
+    if (!onProfileSettings) return;
 
-    try {
-      const res = await fetch(`${API_BASE}/profile/update`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          national_id: user?.id,
-          role:        user?.role,
-          name,
-          email,
-          phone: profilePhone.trim(),
-        }),
-      });
-      const result = await res.json();
-      if (!res.ok) throw new Error(result.error || 'Update failed');
-      setProfileMessage({ type: 'success', text: 'Profile updated successfully.' });
-    } catch (err: any) {
-      setProfileMessage({ type: 'error', text: err.message });
-    }
-  };
+    const name = profileName.trim();
+    const email = profileEmail.trim();
+    const phone = profilePhone.trim();
+    const dirty =
+      name !== (user.name ?? '').trim() ||
+      email !== (user.email ?? '').trim() ||
+      phone !== (user.phone ?? '').trim();
+    if (!dirty) return;
 
-  const patchPatientSettings = <K extends keyof PatientSettings>(key: K, value: PatientSettings[K]) => {
-    setPatientSettings((prev) => (prev ? { ...prev, [key]: value } : prev));
-  };
-
-  const handleSavePatientSettings = async () => {
-    if (!user?.id || !patientSettings) return;
-    setPatientSettingsMessage(null);
-    setPatientSettingsSaving(true);
-    try {
-      const saved = await savePatientSettings({
-        national_id: String(user.id),
-        notify_hunger: patientSettings.notify_hunger,
-        notify_thirst: patientSettings.notify_thirst,
-        notify_alarm: patientSettings.notify_alarm,
-        notify_bathroom: patientSettings.notify_bathroom,
-        notify_medicine: patientSettings.notify_medicine,
-        min_confidence: patientSettings.min_confidence,
-        require_consecutive: patientSettings.require_consecutive,
-        calibration_enabled: patientSettings.calibration_enabled,
-        text_size: patientSettings.text_size,
-        high_contrast: patientSettings.high_contrast,
-        data_retention_days: patientSettings.data_retention_days,
-        preferred_device: patientSettings.preferred_device,
-      });
-      setPatientSettings(saved);
-      setPatientSettingsMessage({ type: 'success', text: 'Settings saved.' });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Failed to save settings';
-      setPatientSettingsMessage({ type: 'error', text: msg });
-    } finally {
-      setPatientSettingsSaving(false);
+    if (profileAutosaveTimerRef.current) {
+      clearTimeout(profileAutosaveTimerRef.current);
     }
-  };
+    profileAutosaveTimerRef.current = setTimeout(() => {
+      profileAutosaveTimerRef.current = null;
+      void performSaveProfile(true);
+    }, 900);
+
+    return () => {
+      if (profileAutosaveTimerRef.current) {
+        clearTimeout(profileAutosaveTimerRef.current);
+        profileAutosaveTimerRef.current = null;
+      }
+    };
+  }, [
+    user?.id,
+    user?.name,
+    user?.email,
+    user?.phone,
+    profileName,
+    profileEmail,
+    profilePhone,
+    activeSidebarItem,
+    performSaveProfile,
+  ]);
 
   const handleChangePassword = async () => {
     if (!user?.id) return;
@@ -634,6 +1080,210 @@ const handleAddPatient = async () => {
   const isUser = role === 'RegisteredUser' 
   const roleLabel = isUser ? 'Patient' : isAdmin ? 'Admin' : 'Clinician';
 
+  const persistPatientSettingsToApi = useCallback(
+    async (opts: { showFeedback?: boolean; showSpinner?: boolean } = {}): Promise<boolean> => {
+      const uid = String(user?.id || '').trim();
+      const ps = patientSettingsRef.current;
+      if (!uid || !ps) return false;
+      const parsedMc = parseMinConfidenceForSave(minConfidenceDraftRef.current);
+      if (parsedMc === null) {
+        if (opts.showFeedback) {
+          setPatientSettingsMessage({
+            type: 'error',
+            text: 'Minimum confidence must be a number between 0 and 1 (decimals allowed).',
+          });
+        }
+        return false;
+      }
+      if (opts.showSpinner) setPatientSettingsSaving(true);
+      try {
+        patientSettingsFetchAbortRef.current?.abort();
+        const saved = await savePatientSettings({
+          national_id: uid,
+          notify_hunger: ps.notify_hunger,
+          notify_thirst: ps.notify_thirst,
+          notify_alarm: ps.notify_alarm,
+          notify_bathroom: ps.notify_bathroom,
+          notify_medicine: ps.notify_medicine,
+          min_confidence: parsedMc,
+          text_size: ps.text_size,
+          high_contrast: ps.high_contrast,
+          data_retention_days: ps.data_retention_days,
+          recorded_data_usage_allowed: ps.recorded_data_usage_allowed,
+          preferred_device: ps.preferred_device,
+        });
+        const mc = coerceMinConfidenceFromApi(saved?.min_confidence, parsedMc);
+        const merged = {
+          ...saved,
+          min_confidence: mc,
+          recorded_data_usage_allowed: Boolean(saved.recorded_data_usage_allowed),
+        };
+        patientSettingsRef.current = merged;
+        setPatientSettings(merged);
+        setMinConfidenceDraft(minConfidenceNumberToDraft(mc));
+        if (opts.showFeedback) {
+          setPatientSettingsMessage({ type: 'success', text: 'Settings saved.' });
+        } else {
+          setPatientSettingsMessage(null);
+        }
+        return true;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Failed to save settings';
+        setPatientSettingsMessage({ type: 'error', text: msg });
+        return false;
+      } finally {
+        if (opts.showSpinner) setPatientSettingsSaving(false);
+      }
+    },
+    [user?.id],
+  );
+
+  const flushPatientSettingsAutosave = useCallback(async () => {
+    if (patientSettingsAutosaveTimerRef.current) {
+      clearTimeout(patientSettingsAutosaveTimerRef.current);
+      patientSettingsAutosaveTimerRef.current = null;
+    }
+    await persistPatientSettingsToApi({ showFeedback: false, showSpinner: false });
+  }, [persistPatientSettingsToApi]);
+
+  useEffect(() => {
+    const schedule = () => {
+      if (!isUser || !user?.id) return;
+      if (patientSettingsAutosaveTimerRef.current) {
+        clearTimeout(patientSettingsAutosaveTimerRef.current);
+      }
+      patientSettingsAutosaveTimerRef.current = setTimeout(() => {
+        patientSettingsAutosaveTimerRef.current = null;
+        void persistPatientSettingsToApi({ showFeedback: false, showSpinner: false });
+      }, 650);
+    };
+    schedulePatientSettingsAutosaveRef.current = schedule;
+    return () => {
+      if (patientSettingsAutosaveTimerRef.current) {
+        clearTimeout(patientSettingsAutosaveTimerRef.current);
+        patientSettingsAutosaveTimerRef.current = null;
+      }
+    };
+  }, [isUser, user?.id, persistPatientSettingsToApi]);
+
+  const patchPatientSettings = <K extends keyof PatientSettings>(key: K, value: PatientSettings[K]) => {
+    setPatientSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, [key]: value };
+      patientSettingsRef.current = next;
+      return next;
+    });
+    if (isUser && user?.id) {
+      schedulePatientSettingsAutosaveRef.current();
+    }
+  };
+
+  useEffect(() => {
+    if (!isUser) {
+      setPatientSettings(null);
+      setMinConfidenceDraft('');
+      prevRecipientSidebarKeyRef.current = undefined;
+    }
+  }, [isUser]);
+
+  useEffect(() => {
+    if (!isUser || !user?.id) return;
+    if (patientSettings?.user_national_id === String(user.id)) return;
+    patientSettingsFetchAbortRef.current?.abort();
+    const ac = new AbortController();
+    patientSettingsFetchAbortRef.current = ac;
+    setPatientSettingsLoading(true);
+    setPatientSettingsMessage(null);
+    fetchPatientSettings(String(user.id), { signal: ac.signal })
+      .then((s) => {
+        if (ac.signal.aborted) return;
+        const mc = coerceMinConfidenceFromApi(s.min_confidence, 0.25);
+        const merged = {
+          ...s,
+          min_confidence: mc,
+          recorded_data_usage_allowed: Boolean(s.recorded_data_usage_allowed),
+        };
+        patientSettingsRef.current = merged;
+        setPatientSettings(merged);
+        setMinConfidenceDraft(minConfidenceNumberToDraft(mc));
+      })
+      .catch((e: unknown) => {
+        if (ac.signal.aborted) return;
+        const msg = e instanceof Error ? e.message : 'Failed to load settings';
+        setPatientSettingsMessage({ type: 'error', text: msg });
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setPatientSettingsLoading(false);
+      });
+    return () => {
+      ac.abort();
+      if (patientSettingsFetchAbortRef.current === ac) {
+        patientSettingsFetchAbortRef.current = null;
+      }
+    };
+  }, [isUser, user?.id, patientSettings?.user_national_id]);
+
+  useEffect(() => {
+    if (!isUser) return;
+    const prev = prevRecipientSidebarKeyRef.current;
+    if (prev === 'rec-settings' && activeSidebarItem !== 'rec-settings') {
+      void flushPatientSettingsAutosave();
+      void flushProfileAutosave();
+    }
+    prevRecipientSidebarKeyRef.current = activeSidebarItem;
+  }, [activeSidebarItem, isUser, flushPatientSettingsAutosave, flushProfileAutosave]);
+
+  useEffect(() => {
+    if (role !== 'specialist') {
+      prevSpecialistSidebarKeyRef.current = undefined;
+      return;
+    }
+    const prev = prevSpecialistSidebarKeyRef.current;
+    if (prev === 'spec-settings' && activeSidebarItem !== 'spec-settings') {
+      void flushProfileAutosave();
+    }
+    prevSpecialistSidebarKeyRef.current = activeSidebarItem;
+  }, [activeSidebarItem, role, flushProfileAutosave]);
+
+  /** Typing minimum confidence updates draft only; debounce-save so leaving the field is not required. */
+  useEffect(() => {
+    if (!isUser || !user?.id || !patientSettings) return;
+    if (activeSidebarItem !== 'rec-settings') return;
+    const parsed = parseMinConfidenceForSave(minConfidenceDraft);
+    if (parsed === null) return;
+    if (Math.abs(parsed - patientSettings.min_confidence) < 1e-6) return;
+    schedulePatientSettingsAutosaveRef.current();
+  }, [minConfidenceDraft, isUser, user?.id, patientSettings, activeSidebarItem]);
+
+  useEffect(() => {
+    if (!isUser) return;
+    readHighConfAlertsTodayCount().then(setEegHighConfAlertsTodayCount).catch(() => undefined);
+    const id = setInterval(() => {
+      readHighConfAlertsTodayCount().then(setEegHighConfAlertsTodayCount).catch(() => undefined);
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [isUser]);
+
+  /** Sessions tab: <60s → `45s`; <1h → `1m30s` or `2m`; ≥1h → `2h`, `1h30m`, `1h5s`, `1h2m5s`, etc. */
+  const formatSessionTabDuration = (durationSeconds: number): string => {
+    const s = Math.max(0, Math.floor(durationSeconds));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) {
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      if (sec === 0) return `${m}m`;
+      return `${m}m${sec}s`;
+    }
+    const h = Math.floor(s / 3600);
+    const rem = s % 3600;
+    const m = Math.floor(rem / 60);
+    const sec = rem % 60;
+    if (m === 0 && sec === 0) return `${h}h`;
+    if (m > 0 && sec === 0) return `${h}h${m}m`;
+    if (m > 0 && sec > 0) return `${h}h${m}m${sec}s`;
+    return `${h}h${sec}s`;
+  };
+
 
   // Load real users from Flask when admin opens user management
   useEffect(() => {
@@ -667,17 +1317,33 @@ const handleAddPatient = async () => {
     fetchSpecialistSessions({ patient_national_id: user.id, limit: 100 })
       .then((sessions) => {
         setRecSessions(sessions.map(s => ({
+          session_id: s.session_id,
           id: `RS-${s.session_id}`,
-          date: s.start_time ? new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
-          word: s.detected_word || '—',
-          accuracy: s.confidence_level != null ? `${Math.round(s.confidence_level * 100)}%` : '—',
+          date: sessionListSavedDateTime(s),
+          word: sessionListTopWord(s),
+          accuracy: sessionListTopWordAvgAcc(s),
           duration: (s.start_time && s.end_time)
-            ? `${Math.round((new Date(s.end_time).getTime() - new Date(s.start_time).getTime()) / 60000)}m`
+            ? formatSessionTabDuration((new Date(s.end_time).getTime() - new Date(s.start_time).getTime()) / 1000)
             : '—',
         })));
       })
       .catch(console.error);
   }, [isUser, user?.id]);
+
+  const openRecipientReport = async (sessionId: number) => {
+    setRecReportOpen(true);
+    setRecReportLoading(true);
+    setRecReportError(null);
+    setRecReport(null);
+    try {
+      const report = await fetchLiveDemoSessionReport(sessionId);
+      setRecReport(report);
+    } catch (e: unknown) {
+      setRecReportError(e instanceof Error ? e.message : 'Failed to load report');
+    } finally {
+      setRecReportLoading(false);
+    }
+  };
 
 
   useEffect(() => {
@@ -720,20 +1386,6 @@ const handleAddPatient = async () => {
         .catch(console.error);
     }
   }, [isAdmin, activeSidebarItem]);
-
-  useEffect(() => {
-    if (!isUser || activeSidebarItem !== 'rec-settings') return;
-    if (!user?.id) return;
-    setPatientSettingsLoading(true);
-    setPatientSettingsMessage(null);
-    fetchPatientSettings(String(user.id))
-      .then(setPatientSettings)
-      .catch((e: unknown) => {
-        const msg = e instanceof Error ? e.message : 'Failed to load settings';
-        setPatientSettingsMessage({ type: 'error', text: msg });
-      })
-      .finally(() => setPatientSettingsLoading(false));
-  }, [isUser, activeSidebarItem, user?.id]);
 
   const handleSaveModelInfo = async () => {
     const name = modelFormName.trim();
@@ -784,35 +1436,35 @@ const handleAddPatient = async () => {
   const adminStats = [
     {
       key: 'users',
-      label: 'Total users',
+      label: 'Total Users',
       value: String(adminStatsData.users),
       icon: 'people-outline',
       tint: colors.logo.paradiso,
-      note: 'All roles',
+      note: 'All Roles',
     },
     {
       key: 'sessions',
-      label: 'Total sessions',
+      label: 'Total Sessions',
       value: String(adminStatsData.sessions),
       icon: 'pulse-outline',
       tint: colors.logo.calypso,
-      note: 'All time',
+      note: 'All Time',
     },
     {
       key: 'accuracy',
-      label: 'Model accuracy',
+      label: 'Model Accuracy',
       value: '—',
       icon: 'checkmark-circle-outline',
       tint: colors.logo.oceanGreen,
-      note: 'Model pending',
+      note: 'Model Pending',
     },
     {
       key: 'alerts',
-      label: 'System alerts',
+      label: 'System Alerts',
       value: '—',
       icon: 'notifications-outline',
       tint: colors.status.warning,
-      note: 'Coming soon',
+      note: 'Coming Soon',
     },
   ];
 
@@ -835,7 +1487,7 @@ const handleAddPatient = async () => {
       key: 'model-version',
       label: 'Model Version',
       value: modelFormVersion.trim() || '—',
-      sub: modelFormName.trim() || 'Not set',
+      sub: modelFormName.trim() || 'Not Set',
       icon: 'hardware-chip-outline' as const,
     },
   ];
@@ -868,8 +1520,8 @@ const handleAddPatient = async () => {
   const specRecentSessions = specSessions.slice(0, 4).map(s => ({
     id: `R-${s.session_id}`,
     patient: s.patient_national_id,
-    word: s.detected_word || '—',
-    accuracy: s.confidence_level != null ? `${Math.round(s.confidence_level * 100)}%` : '—',
+    word: sessionListTopWord(s),
+    accuracy: sessionListTopWordAvgAcc(s),
     time: s.start_time ? new Date(s.start_time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—',
   }));
 
@@ -878,30 +1530,26 @@ const handleAddPatient = async () => {
   const specReports = specSessions.map(s => ({
     id: `REP-${s.session_id}`,
     patient: s.patient_national_id,
-    date: s.start_time ? new Date(s.start_time).toLocaleDateString('en-GB') : '—',
-    word: s.detected_word || '—',
-    accuracy: s.confidence_level != null ? `${Math.round(s.confidence_level * 100)}%` : '—',
+    date: sessionListSavedDateTime(s),
+    word: sessionListTopWord(s),
+    accuracy: sessionListTopWordAvgAcc(s),
   }));
 
   // Recipient mock data
+  const recDetectedWord = eegPredictResult?.predicted_word_ar || '—';
   const recDashboardState: {
-    status: string;
-    timer: string;
     detectedWord: string;
     detectedWordEn: string;
     confidenceWidth: DimensionValue;
     confidenceLabel: string;
-    alert: string;
   } = {
-    status: 'Connected',
-    timer: '00:12:45',
-    detectedWord: eegPredictResult?.predicted_word_ar || '—',
-    detectedWordEn: '',
+    detectedWord: recDetectedWord,
+    detectedWordEn:
+      recDetectedWord !== '—' ? eegDemoWordEnglish(recDetectedWord) : '',
     confidenceWidth: `${Math.round((eegPredictResult?.confidence ?? 0) * 100)}%` as DimensionValue,
     confidenceLabel: eegPredictResult
       ? `${Math.round(eegPredictResult.confidence * 100)}%`
       : '—',
-    alert: 'Critical: Pain detected',
   };
 
   const buildDemoWindow14x128 = (): number[][] => {
@@ -918,44 +1566,303 @@ const handleAddPatient = async () => {
     return out;
   };
 
-  const handleRunEegInference = async () => {
-    setEegPredictError(null);
-    setEegPredictLoading(true);
+  // Removed manual "Run inference" button; live Start/Stop drives demo predictions.
+
+  const stopEegLive = () => {
+    if (eegLiveIntervalRef.current) {
+      clearInterval(eegLiveIntervalRef.current);
+      eegLiveIntervalRef.current = null;
+    }
+    if (eegLiveTimerIntervalRef.current) {
+      clearInterval(eegLiveTimerIntervalRef.current);
+      eegLiveTimerIntervalRef.current = null;
+    }
+    eegLiveStartedAtRef.current = null;
+    setEegLiveTimerLabel('00:00:00');
+    setEegLiveSessionDecodedCount(0);
+    setEegLiveAvgConfidence(0);
+    eegLiveConfSumRef.current = 0;
+    eegLiveEventsRef.current = [];
+    void unloadEegAlertSound();
+    setEegLiveRunning(false);
+  };
+
+  const loadEegAlertSound = React.useCallback(async () => {
+    if (eegAlertSoundRef.current) return;
     try {
-      const win = buildDemoWindow14x128();
-
-      // Run prediction AND save as a session for this user
-      const sessionResult = await createEegSessionFromWindow({
-        patient_national_id: String(user?.id ?? ''),
-        window: win,
-        device: 'EPOC X',
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
       });
+      const { sound } = await Audio.Sound.createAsync(
+        require('../../../assets/sounds/alert-beep.wav'),
+        { shouldPlay: false, volume: 1, isLooping: false },
+      );
+      await sound.setVolumeAsync(1);
+      eegAlertSoundRef.current = sound;
+    } catch {
+      // Missing asset / unsupported
+    }
+  }, []);
 
-      // Update the prediction display
-      setEegPredictResult(sessionResult.prediction);
+  const unloadEegAlertSound = React.useCallback(async () => {
+    const s = eegAlertSoundRef.current;
+    eegAlertSoundRef.current = null;
+    if (s) await s.unloadAsync().catch(() => undefined);
+  }, []);
 
-      // Refresh the sessions list so it shows immediately
-      const refreshed = await fetchSpecialistSessions({
-        patient_national_id: String(user?.id ?? ''),
-        limit: 100,
+  const playHighConfAlertSound = React.useCallback(async () => {
+    const playLoaded = async (s: Audio.Sound) => {
+      await s.setVolumeAsync(1);
+      const st = await s.getStatusAsync();
+      if (st.isLoaded && st.isPlaying) {
+        await s.stopAsync().catch(() => undefined);
+      }
+      await s.setPositionAsync(0);
+      await s.playAsync();
+    };
+
+    try {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        allowsRecordingIOS: false,
+        playThroughEarpieceAndroid: false,
       });
-      setRecSessions(refreshed.map(s => ({
-        id: `RS-${s.session_id}`,
-        date: s.start_time ? new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
-        word: s.detected_word || '—',
-        accuracy: s.confidence_level != null ? `${Math.round(s.confidence_level * 100)}%` : '—',
-        duration: (s.start_time && s.end_time)
-          ? `${Math.round((new Date(s.end_time).getTime() - new Date(s.start_time).getTime()) / 60000)}m`
-          : '—',
-      })));
+      if (!eegAlertSoundRef.current) await loadEegAlertSound();
+      const s = eegAlertSoundRef.current;
+      if (s) {
+        await playLoaded(s);
+        return;
+      }
+    } catch {
+      // fall through to one-shot
+    }
 
+    try {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        allowsRecordingIOS: false,
+      });
+      const { sound } = await Audio.Sound.createAsync(
+        require('../../../assets/sounds/alert-beep.wav'),
+        { shouldPlay: true, volume: 1, isLooping: false },
+      );
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          sound.unloadAsync().catch(() => undefined);
+        }
+      });
+    } catch {
+      // Web autoplay / unsupported
+    }
+  }, [loadEegAlertSound]);
+
+  const getDecodedWeekCount = async (): Promise<number> => {
+    const now = Date.now();
+    const cutoff = now - 7 * 24 * 60 * 60 * 1000;
+    try {
+      const raw = await AsyncStorage.getItem(EEG_DECODED_TS_KEY);
+      const arr = raw ? (JSON.parse(raw) as number[]) : [];
+      const kept = arr.filter((t) => typeof t === 'number' && t >= cutoff);
+      // prune old entries in storage
+      if (kept.length !== arr.length) {
+        await AsyncStorage.setItem(EEG_DECODED_TS_KEY, JSON.stringify(kept));
+      }
+      return kept.length;
+    } catch {
+      return 0;
+    }
+  };
+
+  const recordDecodedEvent = async () => {
+    const now = Date.now();
+    const cutoff = now - 7 * 24 * 60 * 60 * 1000;
+    try {
+      const raw = await AsyncStorage.getItem(EEG_DECODED_TS_KEY);
+      const arr = raw ? (JSON.parse(raw) as number[]) : [];
+      const kept = arr.filter((t) => typeof t === 'number' && t >= cutoff);
+      kept.push(now);
+      await AsyncStorage.setItem(EEG_DECODED_TS_KEY, JSON.stringify(kept));
+      setEegDecodedWeekCount(kept.length);
+    } catch {
+      // no-op
+    }
+  };
+
+  const refreshWeeklyWordStats = React.useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(EEG_DECODED_WORD_EVENTS_KEY);
+      const arr = raw ? (JSON.parse(raw) as EegDecodedWordEvent[]) : [];
+      const now = Date.now();
+      const cutoff = now - 7 * 24 * 60 * 60 * 1000;
+      const kept = arr.filter((e) => e && typeof e.ts === 'number' && e.ts >= cutoff);
+      if (kept.length !== arr.length) {
+        await AsyncStorage.setItem(EEG_DECODED_WORD_EVENTS_KEY, JSON.stringify(kept));
+      }
+      const top = computeWeeklyTopWord(kept);
+      setEegWeeklyTopWord(top.count === 0 ? { word: '—', count: 0 } : top);
+    } catch {
+      setEegWeeklyTopWord({ word: '—', count: 0 });
+    }
+  }, []);
+
+  const recordDecodedWordEvent = async (word: string) => {
+    const w = (word || '').trim();
+    if (!w) return;
+    const now = Date.now();
+    const cutoff = now - 7 * 24 * 60 * 60 * 1000;
+    try {
+      const raw = await AsyncStorage.getItem(EEG_DECODED_WORD_EVENTS_KEY);
+      const arr = raw ? (JSON.parse(raw) as EegDecodedWordEvent[]) : [];
+      const kept = arr.filter((e) => e && typeof e.ts === 'number' && e.ts >= cutoff);
+      kept.push({ ts: now, word: w });
+      const capped = kept.slice(-2000);
+      await AsyncStorage.setItem(EEG_DECODED_WORD_EVENTS_KEY, JSON.stringify(capped));
+      const top = computeWeeklyTopWord(capped);
+      setEegWeeklyTopWord(top.count === 0 ? { word: '—', count: 0 } : top);
+    } catch {
+      // no-op
+    }
+  };
+
+  const formatElapsed = (elapsedMs: number): string => {
+    const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
+
+  const runOneLiveDemoInference = async () => {
+    // Live demo uses LiveDataModels RF 4-word model (subject: aya)
+    const res = await predictLiveDemo('aya');
+    setEegPredictResult(res);
+    const wAlert = String(res?.predicted_word_ar || '').trim();
+    const cAlert = Number(res?.confidence ?? 0);
+    if (wAlert && wAlert !== '—' && cAlert >= EEG_HIGH_CONF_ALERT_THRESHOLD) {
+      void playHighConfAlertSound();
+      void appendHighConfAlertEvent(cAlert).then(setEegHighConfAlertsTodayCount).catch(() => undefined);
+    }
+    setEegLiveSessionDecodedCount((c) => c + 1);
+    eegLiveConfSumRef.current += (res.confidence ?? 0);
+    setEegLiveAvgConfidence((eegLiveConfSumRef.current / Math.max(1, eegLiveSessionDecodedCount + 1)));
+    recordDecodedEvent().catch(() => undefined);
+    if (res?.predicted_word_ar) {
+      const nowIso = new Date().toISOString();
+      const detectedWord = String(res.predicted_word_ar);
+      const confidence = Number(res.confidence ?? 0);
+
+      eegLiveEventsRef.current.push({
+        event_time: nowIso,
+        detected_word: detectedWord,
+        confidence,
+      });
+      recordDecodedWordEvent(detectedWord).catch(() => undefined);
+
+      // Real-time notifications: backend enforces toggles + min confidence; skip call when local settings already rule it out.
+      // Use patientSettingsRef (not closure state) so changes made during an active live demo apply on the next tick without restart.
+      const patientId = String(user?.id || '').trim();
+      const isRecipient = (user?.role ?? 'RegisteredUser') === 'RegisteredUser';
+      const ps = patientSettingsRef.current;
+      if (patientId && isRecipient) {
+        if (!ps || patientBellEligible(ps, detectedWord, confidence)) {
+          createNotificationEvent({
+            patient_national_id: patientId,
+            detected_word: detectedWord,
+            confidence,
+            event_time: nowIso,
+          }).catch(() => undefined);
+        }
+      }
+      // Avoid unbounded growth during long demos
+      if (eegLiveEventsRef.current.length > 500) {
+        eegLiveEventsRef.current = eegLiveEventsRef.current.slice(-500);
+      }
+    }
+  };
+
+  const handleStartEegLive = async () => {
+    if (eegLiveRunning) return;
+    setEegPredictError(null);
+    setEegLiveRunning(true);
+    try {
+      await loadEegAlertSound();
+      eegLiveStartedAtRef.current = Date.now();
+      setEegLiveTimerLabel('00:00:00');
+      eegLiveTimerIntervalRef.current = setInterval(() => {
+        const startedAt = eegLiveStartedAtRef.current;
+        if (!startedAt) return;
+        setEegLiveTimerLabel(formatElapsed(Date.now() - startedAt));
+      }, 1000);
+
+      await runOneLiveDemoInference();
+      // Refresh every 10s for demo
+      eegLiveIntervalRef.current = setInterval(() => {
+        runOneLiveDemoInference().catch((e: unknown) => {
+          const msg = e instanceof Error ? e.message : 'Inference failed';
+          setEegPredictError(msg);
+        });
+      }, 10_000);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Inference failed';
       setEegPredictError(msg);
-    } finally {
-      setEegPredictLoading(false);
+      stopEegLive();
     }
   };
+
+  const handleStopEegLive = async () => {
+    const startedAtMs = eegLiveStartedAtRef.current;
+    const endedAtMs = Date.now();
+    const patientId = String(user?.id ?? '');
+    const word = eegPredictResult?.predicted_word_ar ?? '';
+    const conf = eegPredictResult?.confidence ?? null;
+
+    const eventsSnapshot = eegLiveEventsRef.current.slice();
+    stopEegLive();
+
+    // Persist a session report for the recipient sessions tab
+    if (isUser && patientId && word && conf != null && startedAtMs) {
+      try {
+        await createLiveDemoSession({
+          patient_national_id: patientId,
+          detected_word: word,
+          confidence: conf,
+          start_time: new Date(startedAtMs).toISOString(),
+          end_time: new Date(endedAtMs).toISOString(),
+          device: 'EPOC X',
+          events: eventsSnapshot,
+        } as any);
+
+        const sessions = await fetchSpecialistSessions({ patient_national_id: patientId, limit: 100 });
+        setRecSessions(sessions.map(s => ({
+          id: `RS-${s.session_id}`,
+          session_id: s.session_id,
+          date: sessionListSavedDateTime(s),
+          word: sessionListTopWord(s),
+          accuracy: sessionListTopWordAvgAcc(s),
+          duration: (s.start_time && s.end_time)
+            ? formatSessionTabDuration((new Date(s.end_time).getTime() - new Date(s.start_time).getTime()) / 1000)
+            : '—',
+        })));
+      } catch (e: unknown) {
+        // Don't block UI stop; just show error under chart
+        const msg = e instanceof Error ? e.message : 'Failed to save session';
+        setEegPredictError(msg);
+      }
+    }
+  };
+
+  useEffect(() => {
+    getDecodedWeekCount().then(setEegDecodedWeekCount).catch(() => undefined);
+    refreshWeeklyWordStats().catch(() => undefined);
+    return () => stopEegLive();
+  }, [refreshWeeklyWordStats]);
+
+  useEffect(() => {
+    setEegPredictWordShowEn(false);
+  }, [eegPredictResult?.predicted_word_ar]);
 
   const handleAdminRunModelTest = async () => {
     setAdminModelTestError(null);
@@ -1000,26 +1907,33 @@ const handleAddPatient = async () => {
 
   const recTopStats = [
     {
-      key: 'quality',
-      label: 'Session quality',
-      value: '92%',
-      note: 'Stable signals',
-      icon: 'pulse-outline' as const,
+      key: 'topword',
+      label: 'Most Frequent Word',
+      value: eegWeeklyTopWord.count === 0 ? '—' : eegWeeklyTopWord.word,
+      valueEnd:
+        eegWeeklyTopWord.count === 0
+          ? undefined
+          : eegDemoWordEnglish(eegWeeklyTopWord.word) || undefined,
+      note:
+        eegWeeklyTopWord.count === 0
+          ? 'Last 7 days · start live demo'
+          : `${eegWeeklyTopWord.count}× this week`,
+      icon: 'trophy-outline' as const,
       tint: colors.logo.paradiso,
     },
     {
       key: 'decoded',
-      label: 'Signals decoded',
-      value: '124',
-      note: 'Today',
+      label: 'Signals Decoded',
+      value: String(eegDecodedWeekCount),
+      note: 'Last 7 days',
       icon: 'analytics-outline' as const,
       tint: colors.logo.calypso,
     },
     {
       key: 'alerts',
-      label: 'Alerts today',
-      value: '3',
-      note: 'Last 24 hours',
+      label: 'Alerts Today',
+      value: String(eegHighConfAlertsTodayCount),
+      note: 'Confidence ≥ 70%',
       icon: 'notifications-outline' as const,
       tint: colors.status.warning,
     },
@@ -1073,10 +1987,10 @@ const handleAddPatient = async () => {
   ];
 
   const systemHealth = [
-    { label: 'API latency', value: '121 ms', status: 'good' as const },
-    { label: 'Queue depth', value: '37 msgs', status: 'info' as const },
+    { label: 'API Latency', value: '121 ms', status: 'good' as const },
+    { label: 'Queue Depth', value: '37 msgs', status: 'info' as const },
     { label: 'Uptime', value: '99.96%', status: 'good' as const },
-    { label: 'Last alert', value: 'EEG drop (5m ago)', status: 'warning' as const },
+    { label: 'Last Alert', value: 'EEG drop (5m ago)', status: 'warning' as const },
   ];
 
   // Slightly varied mock points to feel more “live”
@@ -1128,7 +2042,7 @@ const handleAddPatient = async () => {
               </View>
               <TouchableOpacity style={styles.adminPrimaryButton} onPress={openAddUserForm}>
                 <Ionicons name="add" size={18} color={colors.text.white} />
-                <AppText style={styles.adminPrimaryButtonText}>Add user</AppText>
+                <AppText style={styles.adminPrimaryButtonText}>Add User</AppText>
               </TouchableOpacity>
             </View>
 
@@ -1447,7 +2361,7 @@ const handleAddPatient = async () => {
             <View style={styles.modelHalfCard}>
               <View style={styles.adminTableHeader}>
                 <View>
-                  <AppText style={styles.adminTableTitle}>Deployed model</AppText>
+                  <AppText style={styles.adminTableTitle}>Deployed Model</AppText>
                   <AppText style={styles.adminTableSubtitle}>
                     Record the production decoder: display name, version, and when it was last trained.
                   </AppText>
@@ -1455,7 +2369,7 @@ const handleAddPatient = async () => {
               </View>
 
               <View style={{ marginBottom: spacing.md }}>
-                <AppText style={styles.recPanelTitle}>Model artifact</AppText>
+                <AppText style={styles.recPanelTitle}>Model Artifact</AppText>
                 {modelArtifactLoading ? (
                   <AppText style={styles.modelFieldHint}>Checking Saved_Model…</AppText>
                 ) : modelArtifact ? (
@@ -1490,7 +2404,7 @@ const handleAddPatient = async () => {
               ) : (
                 <>
                   <View style={styles.modelInfoField}>
-                    <AppText style={styles.recFormLabel}>Current model name</AppText>
+                    <AppText style={styles.recFormLabel}>Current Model Name</AppText>
                     <TextInput
                       value={modelFormName}
                       onChangeText={setModelFormName}
@@ -1512,7 +2426,7 @@ const handleAddPatient = async () => {
                     />
                   </View>
                   <CalendarDateField
-                    label="Training date"
+                    label="Training Date"
                     value={modelFormTrainingDate}
                     onChange={setModelFormTrainingDate}
                     disabled={modelFormSaving}
@@ -1545,12 +2459,12 @@ const handleAddPatient = async () => {
                   >
                     <Ionicons name="save-outline" size={18} color={colors.text.white} />
                     <AppText style={styles.adminPrimaryButtonText}>
-                      {modelFormSaving ? 'Saving…' : 'Save model info'}
+                      {modelFormSaving ? 'Saving…' : 'Save Model Info'}
                     </AppText>
                   </TouchableOpacity>
 
                   <View style={{ marginTop: spacing.lg }}>
-                    <AppText style={styles.recPanelTitle}>Quick inference test</AppText>
+                    <AppText style={styles.recPanelTitle}>Quick Inference Test</AppText>
                     <AppText style={styles.recFormHelper}>
                       Sends a demo 14×128 window to `POST /ml/predict-window` and displays the result.
                     </AppText>
@@ -1735,7 +2649,7 @@ const handleAddPatient = async () => {
     if (activeSidebarItem === 'admin-settings') {
       return (
         <View style={styles.adminFullWidthSection}>
-          <View style={[styles.adminTableCard, styles.adminFullWidthCard, styles.recGlassCard]}>
+          <SettingsPageGlassCard>
             <View style={styles.adminTableHeader}>
               <View>
                 <AppText style={styles.adminTableTitle}>Admin Settings</AppText>
@@ -1751,7 +2665,7 @@ const handleAddPatient = async () => {
             <View style={styles.recSettingsForm}>
               <View style={styles.recSettingsRow}>
                 <View style={[styles.recFormPanel, styles.adminSettingsPanel]}>
-                  <AppText style={styles.recPanelTitle}>Alerts & notifications</AppText>
+                  <AppText style={styles.recPanelTitle}>Alerts & Notifications</AppText>
 
                   <View style={styles.adminSettingRow}>
                     <View style={styles.adminSettingTextCol}>
@@ -1833,7 +2747,7 @@ const handleAddPatient = async () => {
                 </View>
 
                 <View style={[styles.recFormPanel, styles.adminSettingsPanel]}>
-                  <AppText style={styles.recPanelTitle}>Security & sessions</AppText>
+                  <AppText style={styles.recPanelTitle}>Security & Sessions</AppText>
 
                   <View style={styles.adminSettingRow}>
                     <View style={styles.adminSettingTextCol}>
@@ -1882,7 +2796,7 @@ const handleAddPatient = async () => {
 
               <View style={styles.recSettingsRow}>
                 <View style={[styles.recFormPanel, styles.adminSettingsPanel]}>
-                  <AppText style={styles.recPanelTitle}>Data & backups</AppText>
+                  <AppText style={styles.recPanelTitle}>Data & Backups</AppText>
 
                   <View style={styles.adminSettingRow}>
                     <View style={styles.adminSettingTextCol}>
@@ -1945,7 +2859,7 @@ const handleAddPatient = async () => {
                 </View>
               </View>
             </View>
-          </View>
+          </SettingsPageGlassCard>
         </View>
       );
     }
@@ -1973,7 +2887,7 @@ const handleAddPatient = async () => {
           <View style={styles.adminChartCard}>
             <View style={styles.adminTableHeader}>
               <View>
-                <AppText style={styles.adminTableTitle}>Model accuracy</AppText>
+                <AppText style={styles.adminTableTitle}>Model Accuracy</AppText>
                 <AppText style={styles.adminTableSubtitle}>
                   Last 8 weeks • CNN-LSTM
                 </AppText>
@@ -2061,8 +2975,8 @@ const handleAddPatient = async () => {
           <View style={styles.adminChartSide}>
             <View style={styles.adminCard}>
               <View style={styles.adminCardHeader}>
-                <AppText style={styles.adminCardTitle}>System health</AppText>
-                <AppText style={styles.adminCardSubtitle}>Realtime checks</AppText>
+                <AppText style={styles.adminCardTitle}>System Health</AppText>
+                <AppText style={styles.adminCardSubtitle}>Realtime Checks</AppText>
               </View>
               {systemHealth.map((item) => (
                 <View key={item.label} style={styles.adminHealthRow}>
@@ -2084,7 +2998,7 @@ const handleAddPatient = async () => {
 
             <View style={styles.adminCard}>
               <View style={styles.adminCardHeader}>
-                <AppText style={styles.adminCardTitle}>Active model</AppText>
+                <AppText style={styles.adminCardTitle}>Active Model</AppText>
                 <View style={[styles.adminStatusPill, styles.adminPillInfo]}>
                   <AppText style={styles.adminStatusText}>CNN-LSTM v1.0</AppText>
                 </View>
@@ -2159,7 +3073,7 @@ const handleAddPatient = async () => {
               </View>
               <TouchableOpacity style={styles.adminPrimaryButton} onPress={openAddPatientForm}>
                 <Ionicons name="add" size={18} color={colors.text.white} />
-                <AppText style={styles.adminPrimaryButtonText}>Add patient</AppText>
+                <AppText style={styles.adminPrimaryButtonText}>Add Patient</AppText>
               </TouchableOpacity>
             </View>
 
@@ -2178,7 +3092,7 @@ const handleAddPatient = async () => {
 
                 <View style={styles.adminFormGrid}>
                   <View style={styles.adminFormField}>
-                    <AppText style={styles.recFormLabel}>Room number</AppText>
+                    <AppText style={styles.recFormLabel}>Room Number</AppText>
                     <TextInput
                       value={newPatientRoom}
                       onChangeText={setNewPatientRoom}
@@ -2192,7 +3106,7 @@ const handleAddPatient = async () => {
                   </View>
 
                   <View style={styles.adminFormField}>
-                    <AppText style={styles.recFormLabel}>Patient name</AppText>
+                    <AppText style={styles.recFormLabel}>Patient Name</AppText>
                     <TextInput
                       value={newPatientName}
                       onChangeText={setNewPatientName}
@@ -2353,7 +3267,7 @@ const handleAddPatient = async () => {
                 </View>
                 <View style={styles.adminFormGrid}>
                   <View style={styles.adminFormField}>
-                    <AppText style={styles.recFormLabel}>Room number</AppText>
+                    <AppText style={styles.recFormLabel}>Room Number</AppText>
                     <TextInput
                       value={editPatientRoom}
                       onChangeText={setEditPatientRoom}
@@ -2366,7 +3280,7 @@ const handleAddPatient = async () => {
                     <AppText style={styles.recFormHelper}>Must stay unique across patients.</AppText>
                   </View>
                   <View style={styles.adminFormField}>
-                    <AppText style={styles.recFormLabel}>Patient name</AppText>
+                    <AppText style={styles.recFormLabel}>Patient Name</AppText>
                     <TextInput value={editPatientName} onChangeText={setEditPatientName} placeholder="Full name" placeholderTextColor={colors.text.secondary} style={styles.recFormInput} />
                   </View>
                 </View>
@@ -2531,7 +3445,7 @@ const handleAddPatient = async () => {
               >
                 <Ionicons name="add-circle-outline" size={16} color={colors.text.white} />
                 <AppText style={styles.adminPrimaryButtonText}>
-                  {createSessionLoading ? 'Creating…' : 'Create session (demo)'}
+                  {createSessionLoading ? 'Creating…' : 'Create Session (Demo)'}
                 </AppText>
               </TouchableOpacity>
             </View>
@@ -2540,7 +3454,7 @@ const handleAddPatient = async () => {
           <View style={styles.adminTableCard}>
             <View style={styles.adminTableHeader}>
               <View>
-                <AppText style={styles.adminTableTitle}>Saved sessions</AppText>
+                <AppText style={styles.adminTableTitle}>Saved Sessions</AppText>
                 <AppText style={styles.adminTableSubtitle}>
                   Loaded from SQLite (`EEGSession`). New demo sessions use the integrated EEG model.
                 </AppText>
@@ -2555,8 +3469,8 @@ const handleAddPatient = async () => {
             <View style={styles.adminTableHeadRow}>
               <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>ID</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Patient</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Word</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Conf</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Top Predicted</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Avg Acc.</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Device</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Time</AppText>
             </View>
@@ -2576,9 +3490,9 @@ const handleAddPatient = async () => {
                 <View key={String(s.session_id)} style={styles.adminTableRow}>
                   <AppText style={[styles.adminTableCell, styles.adminColNarrow]}>{s.session_id}</AppText>
                   <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{s.patient_national_id}</AppText>
-                  <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{s.detected_word}</AppText>
+                  <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{sessionListTopWord(s)}</AppText>
                   <AppText style={[styles.adminTableCellRight, styles.adminColSmall]}>
-                    {s.confidence_level == null ? '—' : `${Math.round(s.confidence_level * 100)}%`}
+                    {sessionListTopWordAvgAcc(s)}
                   </AppText>
                   <AppText style={[styles.adminTableCell, styles.adminColMedium]}>{s.device || '—'}</AppText>
                   <AppText style={[styles.adminTableCell, styles.adminColWide]}>
@@ -2608,9 +3522,9 @@ const handleAddPatient = async () => {
             <View style={styles.adminTableHeadRow}>
               <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>Report ID</AppText>
               <AppText style={[styles.adminTableHeadText, styles.specReportPatientCol]}>Patient</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.specReportDateCol]}>Date</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.specReportWordCol]}>Recognized Word</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.specReportAccCol]}>Accuracy</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.specReportDateCol]}>Date & Time</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.specReportWordCol]}>Top Predicted Word</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.specReportAccCol]}>Avg Accuracy</AppText>
               <AppText style={[styles.adminTableHeadText, styles.specReportExportCol]}>Export</AppText>
             </View>
 
@@ -2626,7 +3540,11 @@ const handleAddPatient = async () => {
                     <Ionicons name="download-outline" size={18} color={colors.text.primary} />
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.adminIconButton}>
-                    <Ionicons name="print-outline" size={18} color={colors.text.secondary} />
+                    <Image
+                      source={require('../../../assets/file.png')}
+                      style={styles.specReportFileIcon}
+                      accessibilityLabel="Report"
+                    />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -2639,7 +3557,7 @@ const handleAddPatient = async () => {
     if (activeSidebarItem === 'spec-settings') {
       return (
         <View style={styles.adminFullWidthSection}>
-          <View style={[styles.adminTableCard, styles.adminFullWidthCard, styles.recGlassCard]}>
+          <SettingsPageGlassCard>
             <View style={styles.adminTableHeader}>
               <View>
                 <AppText style={styles.adminTableTitle}>Settings</AppText>
@@ -2653,12 +3571,18 @@ const handleAddPatient = async () => {
               </View>
             </View>
 
+            {profileMessage?.type === 'error' ? (
+              <View style={[styles.adminFormMessage, styles.adminFormMessageError, { marginBottom: spacing.md }]}>
+                <AppText style={styles.adminFormMessageText}>{profileMessage.text}</AppText>
+              </View>
+            ) : null}
+
             <View style={styles.recSettingsForm}>
               <View style={styles.recSettingsRow}>
                 <View style={styles.recFormPanel}>
-                  <AppText style={styles.recPanelTitle}>Professional profile</AppText>
+                  <AppText style={styles.recPanelTitle}>Professional Profile</AppText>
                   <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>Full name</AppText>
+                    <AppText style={styles.recFormLabel}>Full Name</AppText>
                     <TextInput
                       value={profileName}
                       onChangeText={setProfileName}
@@ -2692,14 +3616,14 @@ const handleAddPatient = async () => {
                 </View>
 
                 <View style={[styles.recFormPanel, styles.adminSettingsPanel]}>
-                  <AppText style={styles.recPanelTitle}>Clinical notifications</AppText>
+                  <AppText style={styles.recPanelTitle}>Clinical Notifications</AppText>
                   <AppText style={styles.recFormHelper}>
                     Same ideas as admin system alerts, scoped to your practice (local toggles for now).
                   </AppText>
 
                   <View style={styles.adminSettingRow}>
                     <View style={styles.adminSettingTextCol}>
-                      <AppText style={styles.adminSettingLabel}>Email notifications</AppText>
+                      <AppText style={styles.adminSettingLabel}>Email Notifications</AppText>
                       <AppText style={styles.adminSettingHelper}>Summaries and non-urgent updates</AppText>
                     </View>
                     <Switch
@@ -2712,7 +3636,7 @@ const handleAddPatient = async () => {
 
                   <View style={styles.adminSettingRow}>
                     <View style={styles.adminSettingTextCol}>
-                      <AppText style={styles.adminSettingLabel}>Session summary alerts</AppText>
+                      <AppText style={styles.adminSettingLabel}>Session Summary Alerts</AppText>
                       <AppText style={styles.adminSettingHelper}>When a session ends or is exported</AppText>
                     </View>
                     <Switch
@@ -2725,7 +3649,7 @@ const handleAddPatient = async () => {
 
                   <View style={styles.adminSettingRow}>
                     <View style={styles.adminSettingTextCol}>
-                      <AppText style={styles.adminSettingLabel}>Low decoding accuracy</AppText>
+                      <AppText style={styles.adminSettingLabel}>Low Decoding Accuracy</AppText>
                       <AppText style={styles.adminSettingHelper}>Warn when confidence drops</AppText>
                     </View>
                     <Switch
@@ -2738,7 +3662,7 @@ const handleAddPatient = async () => {
 
                   <View style={styles.adminSettingRow}>
                     <View style={styles.adminSettingTextCol}>
-                      <AppText style={styles.adminSettingLabel}>Critical patient alerts</AppText>
+                      <AppText style={styles.adminSettingLabel}>Critical Patient Alerts</AppText>
                       <AppText style={styles.adminSettingHelper}>Pain, bathroom, medicine flags</AppText>
                     </View>
                     <Switch
@@ -2753,9 +3677,9 @@ const handleAddPatient = async () => {
 
               <View style={styles.recSettingsRow}>
                 <View style={[styles.recFormPanel, { flex: 1, minWidth: 280 }]}>
-                  <AppText style={styles.recPanelTitle}>EEG workspace</AppText>
+                  <AppText style={styles.recPanelTitle}>EEG Workspace</AppText>
                   <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>Primary device</AppText>
+                    <AppText style={styles.recFormLabel}>Primary Device</AppText>
                     <View style={styles.recDeviceCard}>
                       <Ionicons name="pulse-outline" size={18} color={colors.logo.paradiso} />
                       <View>
@@ -2765,7 +3689,7 @@ const handleAddPatient = async () => {
                     </View>
                   </View>
                   <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>Connection status</AppText>
+                    <AppText style={styles.recFormLabel}>Connection Status</AppText>
                     <View style={styles.recDeviceStatusRow}>
                       <View style={[styles.adminStatusPill, styles.adminPillSuccess]}>
                         <AppText style={styles.adminStatusText}>Ready</AppText>
@@ -2776,32 +3700,11 @@ const handleAddPatient = async () => {
                 </View>
               </View>
 
-              <View style={styles.recFormActions}>
-                {profileMessage ? (
-                  <View
-                    style={[
-                      styles.adminFormMessage,
-                      profileMessage.type === 'error'
-                        ? styles.adminFormMessageError
-                        : styles.adminFormMessageSuccess,
-                    ]}
-                  >
-                    <AppText style={styles.adminFormMessageText}>{profileMessage.text}</AppText>
-                  </View>
-                ) : null}
-                <TouchableOpacity
-                  style={[styles.adminPrimaryButton, styles.recSaveButton]}
-                  onPress={handleSaveProfile}
-                >
-                  <Ionicons name="save-outline" size={16} color={colors.text.white} />
-                  <AppText style={styles.adminPrimaryButtonText}>Save profile</AppText>
-                </TouchableOpacity>
-              </View>
               <View style={styles.recSettingsRow}>
                 <View style={styles.recFormPanel}>
                   <AppText style={styles.recPanelTitle}>Security</AppText>
                   <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>Current password</AppText>
+                    <AppText style={styles.recFormLabel}>Current Password</AppText>
                     <TextInput
                       value={currentPassword}
                       onChangeText={setCurrentPassword}
@@ -2811,7 +3714,7 @@ const handleAddPatient = async () => {
                     />
                   </View>
                   <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>New password</AppText>
+                    <AppText style={styles.recFormLabel}>New Password</AppText>
                     <TextInput
                       value={newPassword}
                       onChangeText={setNewPassword}
@@ -2839,7 +3742,7 @@ const handleAddPatient = async () => {
                 </View>
               </View>
             </View>
-          </View>
+          </SettingsPageGlassCard>
         </View>
       );
     }
@@ -2947,9 +3850,9 @@ const handleAddPatient = async () => {
 
             <View style={styles.adminTableHeadRow}>
               <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>Session ID</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Date</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.specReportWordCol]}>Recognized Word</AppText>
-              <AppText style={[styles.adminTableHeadText, styles.specReportAccCol]}>Accuracy</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Date & Time</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.specReportWordCol]}>Top Predicted Word</AppText>
+              <AppText style={[styles.adminTableHeadText, styles.specReportAccCol]}>Avg Accuracy</AppText>
               <AppText style={[styles.adminTableHeadText, styles.specReportDateCol]}>Duration</AppText>
               <AppText style={[styles.adminTableHeadText, styles.specReportExportCol]}>Export</AppText>
             </View>
@@ -2962,15 +3865,182 @@ const handleAddPatient = async () => {
                 <AppText style={[styles.adminTableCellRight, styles.specReportAccCol]}>{s.accuracy}</AppText>
                 <AppText style={[styles.adminTableCell, styles.specReportDateCol]}>{s.duration}</AppText>
                 <View style={[styles.specReportExportCol, styles.specReportExportActions]}>
-                  <TouchableOpacity style={styles.adminIconButton}>
+                  <TouchableOpacity
+                    style={styles.adminIconButton}
+                    onPress={() => {
+                      const idNum = Number(s.session_id ?? String(s.id).replace('RS-', ''));
+                      if (Number.isFinite(idNum)) {
+                        const url = liveDemoSessionReportXlsxUrl(idNum);
+                        if (Platform.OS === 'web') {
+                          // @ts-ignore
+                          window.open(url, '_blank');
+                        } else {
+                          Linking.openURL(url).catch(() => undefined);
+                        }
+                      }
+                    }}
+                  >
                     <Ionicons name="download-outline" size={18} color={colors.text.primary} />
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.adminIconButton}>
-                    <Ionicons name="print-outline" size={18} color={colors.text.secondary} />
+                  <TouchableOpacity
+                    style={styles.adminIconButton}
+                    onPress={() => {
+                      const idNum = Number(s.session_id ?? String(s.id).replace('RS-', ''));
+                      if (Number.isFinite(idNum)) openRecipientReport(idNum);
+                    }}
+                  >
+                    <Image
+                      source={require('../../../assets/file.png')}
+                      style={styles.specReportFileIcon}
+                      accessibilityLabel="Open session report"
+                    />
                   </TouchableOpacity>
                 </View>
               </View>
             ))}
+
+            <Modal visible={recReportOpen} transparent animationType="fade" onRequestClose={() => setRecReportOpen(false)}>
+              <Pressable style={styles.modalBackdrop} onPress={() => setRecReportOpen(false)}>
+                <Pressable style={styles.modalCard} onPress={() => undefined}>
+                  <View style={styles.modalHeaderRow}>
+                    <AppText style={styles.modalTitle}>Session Report</AppText>
+                    <TouchableOpacity style={styles.adminIconButton} onPress={() => setRecReportOpen(false)}>
+                      <Ionicons name="close" size={18} color={colors.text.primary} />
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.modalTitleDivider} />
+                  {recReportLoading ? (
+                    <AppText style={styles.adminTableSubtitle}>Loading…</AppText>
+                  ) : recReportError ? (
+                    <AppText style={[styles.adminTableSubtitle, { color: colors.status.error }]}>{recReportError}</AppText>
+                  ) : recReport ? (
+                    <ScrollView
+                      style={styles.reportModalScroll}
+                      contentContainerStyle={styles.reportModalScrollContent}
+                      showsVerticalScrollIndicator={false}
+                      showsHorizontalScrollIndicator={false}
+                      bounces={false}
+                    >
+                      {(() => {
+                        const counts = recReport.word_counts || {};
+                        const entries = Object.entries(counts);
+                        const totalPred = (recReport.events || []).length;
+                        const most = entries.sort((a, b) => b[1] - a[1])[0];
+                        const mostWord = most?.[0] || recReport.most_repeated_word || '—';
+                        const mostCount = most?.[1] ?? 0;
+                        const avgConfLabel =
+                          recReport.avg_confidence != null ? `${Math.round(recReport.avg_confidence * 100)}%` : '—';
+                        const startLabel = recReport.start_time
+                          ? new Date(recReport.start_time).toLocaleString('en-GB', { hour12: false })
+                          : '—';
+                        const endLabel = recReport.end_time
+                          ? new Date(recReport.end_time).toLocaleString('en-GB', { hour12: false })
+                          : '—';
+                        const durationLabel = recReport.duration_seconds != null
+                          ? (() => {
+                              const s = Math.max(0, recReport.duration_seconds);
+                              const h = Math.floor(s / 3600);
+                              const m = Math.floor((s % 3600) / 60);
+                              const sec = s % 60;
+                              return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+                            })()
+                          : '—';
+
+                        return (
+                          <>
+                            <AppText style={styles.reportSectionTitle}>Session Info</AppText>
+                            <View style={styles.reportSectionGroup}>
+                              <View style={styles.reportFieldStack}>
+                                <View style={styles.reportSheetField}>
+                                  <AppText style={styles.recFormLabel}>Session ID</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>{String(recReport.session_id)}</AppText>
+                                  </View>
+                                </View>
+                                <View style={styles.reportSheetField}>
+                                  <AppText style={styles.recFormLabel}>Start</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>{startLabel}</AppText>
+                                  </View>
+                                </View>
+                                <View style={styles.reportSheetField}>
+                                  <AppText style={styles.recFormLabel}>End</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>{endLabel}</AppText>
+                                  </View>
+                                </View>
+                                <View style={[styles.reportSheetField, styles.reportSheetFieldLast]}>
+                                  <AppText style={styles.recFormLabel}>Duration</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>{durationLabel}</AppText>
+                                  </View>
+                                </View>
+                              </View>
+                            </View>
+
+                            <AppText style={[styles.reportSectionTitle, { marginTop: spacing.md }]}>
+                              Predictions
+                            </AppText>
+                            <View style={styles.reportFieldStack}>
+                              {(recReport.events || []).map((ev, idx) => (
+                                <View key={`${ev.event_time}-${idx}`} style={styles.reportPredictionCard}>
+                                  <AppText style={styles.reportPredictionMeta}>Prediction #{idx + 1}</AppText>
+                                  <AppText style={styles.recFormLabel}>Predicted Word</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>{ev.detected_word}</AppText>
+                                  </View>
+                                  <AppText style={[styles.recFormLabel, { marginTop: spacing.sm }]}>Time</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>{ev.elapsed}</AppText>
+                                    {ev.day ? (
+                                      <AppText style={styles.reportValueShellSub}>{ev.day}</AppText>
+                                    ) : null}
+                                  </View>
+                                  <AppText style={[styles.recFormLabel, { marginTop: spacing.sm }]}>Confidence</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>
+                                      {ev.confidence != null ? `${Math.round(ev.confidence * 100)}%` : '—'}
+                                    </AppText>
+                                  </View>
+                                </View>
+                              ))}
+                            </View>
+
+                            <AppText style={[styles.reportSectionTitle, { marginTop: spacing.md }]}>
+                              Summary
+                            </AppText>
+                            <View style={styles.reportSectionGroup}>
+                              <View style={styles.reportFieldStack}>
+                                <View style={styles.reportSheetField}>
+                                  <AppText style={styles.recFormLabel}>Most Predicted Word</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>
+                                      {mostWord} ({mostCount})
+                                    </AppText>
+                                  </View>
+                                </View>
+                                <View style={styles.reportSheetField}>
+                                  <AppText style={styles.recFormLabel}>Total Predictions</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>{String(totalPred)}</AppText>
+                                  </View>
+                                </View>
+                                <View style={[styles.reportSheetField, styles.reportSheetFieldLast]}>
+                                  <AppText style={styles.recFormLabel}>Avg Confidence</AppText>
+                                  <View style={styles.reportValueShell}>
+                                    <AppText style={styles.reportValueShellText}>{avgConfLabel}</AppText>
+                                  </View>
+                                </View>
+                              </View>
+                            </View>
+                          </>
+                        );
+                      })()}
+                    </ScrollView>
+                  ) : null}
+                </Pressable>
+              </Pressable>
+            </Modal>
           </View>
         </View>
       );
@@ -2979,20 +4049,35 @@ const handleAddPatient = async () => {
     if (activeSidebarItem === 'rec-settings') {
       return (
         <View style={styles.adminFullWidthSection}>
-          <View style={[styles.adminTableCard, styles.adminFullWidthCard]}>
+          <SettingsPageGlassCard>
             <View style={styles.adminTableHeader}>
               <View>
                 <AppText style={styles.adminTableTitle}>Settings</AppText>
                 <AppText style={styles.adminTableSubtitle}>
-                  Profile, alerts, accessibility, and privacy preferences
+                  Profile, alerts, device preferences, security & privacy
                 </AppText>
               </View>
             </View>
 
+            {profileMessage?.type === 'error' || patientSettingsMessage?.type === 'error' ? (
+              <View style={{ gap: spacing.xs, marginBottom: spacing.md }}>
+                {profileMessage?.type === 'error' ? (
+                  <View style={[styles.adminFormMessage, styles.adminFormMessageError]}>
+                    <AppText style={styles.adminFormMessageText}>{profileMessage.text}</AppText>
+                  </View>
+                ) : null}
+                {patientSettingsMessage?.type === 'error' ? (
+                  <View style={[styles.adminFormMessage, styles.adminFormMessageError]}>
+                    <AppText style={styles.adminFormMessageText}>{patientSettingsMessage.text}</AppText>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
             <View style={styles.recSettingsForm}>
               <View style={styles.recSettingsRow}>
                 <View style={styles.recFormPanel}>
-                  <AppText style={styles.recPanelTitle}>Personal info</AppText>
+                  <AppText style={styles.recPanelTitle}>Personal Info</AppText>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>Full Name</AppText>
                     <TextInput 
@@ -3000,7 +4085,6 @@ const handleAddPatient = async () => {
                     onChangeText={setProfileName}
                     style={styles.recFormInput}
                     />
-                    <AppText style={styles.recFormHelper}>Use your name as on file</AppText>
                   </View>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>Email Address</AppText>
@@ -3011,7 +4095,6 @@ const handleAddPatient = async () => {
                       autoCapitalize="none"
                       style={styles.recFormInput}
                     />
-                    <AppText style={styles.recFormHelper}>We’ll send reports here</AppText>
                   </View>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>Phone Number</AppText>
@@ -3023,12 +4106,11 @@ const handleAddPatient = async () => {
                       placeholder="05XXXXXXXX"
                       style={styles.recFormInput}
                     />
-                    <AppText style={styles.recFormHelper}>For urgent alerts</AppText>
                   </View>
                 </View>
 
                 <View style={styles.recFormPanel}>
-                  <AppText style={styles.recPanelTitle}>EEG device</AppText>
+                  <AppText style={styles.recPanelTitle}>Device Name</AppText>
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>EEG Device</AppText>
                     <View style={styles.recDeviceCard}>
@@ -3042,7 +4124,7 @@ const handleAddPatient = async () => {
                     </View>
                   </View>
                   <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>Preferred device label</AppText>
+                    <AppText style={styles.recFormLabel}>Device Name</AppText>
                     <TextInput
                       value={patientSettings?.preferred_device ?? ''}
                       onChangeText={(t) => patchPatientSettings('preferred_device', t)}
@@ -3061,43 +4143,31 @@ const handleAddPatient = async () => {
                       <AppText style={styles.recFormHelper}>Last sync: 45s ago</AppText>
                     </View>
                   </View>
-                  <View style={styles.recFormField}>
-                    <View style={styles.adminSettingRow}>
-                      <View style={styles.adminSettingTextCol}>
-                        <AppText style={styles.adminSettingLabel}>Calibration before session</AppText>
-                        <AppText style={styles.adminSettingHelper}>Run a short calibration step</AppText>
-                      </View>
-                      <Switch
-                        value={patientSettings?.calibration_enabled ?? false}
-                        onValueChange={(v) => patchPatientSettings('calibration_enabled', v)}
-                        trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
-                        thumbColor={colors.background.white}
-                        disabled={patientSettingsSaving}
-                      />
-                    </View>
-                  </View>
                 </View>
               </View>
 
               <View style={styles.recSettingsRow}>
                 <View style={styles.recFormPanel}>
-                  <AppText style={styles.recPanelTitle}>Alerts & safety</AppText>
+                  <AppText style={styles.recPanelTitle}>Alerts & Safety</AppText>
                   {patientSettingsLoading ? (
                     <AppText style={styles.recFormHelper}>Loading preferences…</AppText>
                   ) : patientSettings ? (
                     <>
-                      <AppText style={styles.recFormHelper}>Enable alerts for decoded words:</AppText>
+                      <AppText style={styles.recFormHelper}>
+                        Notification bell: a word appears only if its toggle is on and confidence is at least your
+                        minimum below.
+                      </AppText>
                       {[
                         { key: 'notify_hunger' as const, label: 'Hunger (جوع)' },
                         { key: 'notify_thirst' as const, label: 'Thirst (عطش)' },
-                        { key: 'notify_alarm' as const, label: 'Alarm (انذار)' },
+                        { key: 'notify_alarm' as const, label: 'Alarm (إنذار)' },
                         { key: 'notify_bathroom' as const, label: 'Bathroom (حمام)' },
                         { key: 'notify_medicine' as const, label: 'Medicine (دواء)' },
                       ].map((it) => (
                         <View key={it.key} style={styles.adminSettingRow}>
                           <View style={styles.adminSettingTextCol}>
                             <AppText style={styles.adminSettingLabel}>{it.label}</AppText>
-                            <AppText style={styles.adminSettingHelper}>Show a notification when detected</AppText>
+                            <AppText style={styles.adminSettingHelper}>Allow this word in the notification list</AppText>
                           </View>
                           <Switch
                             value={patientSettings[it.key]}
@@ -3110,37 +4180,27 @@ const handleAddPatient = async () => {
                       ))}
 
                       <View style={styles.recFormField}>
-                        <AppText style={styles.recFormLabel}>Minimum confidence (0–1)</AppText>
+                        <AppText style={styles.recFormLabel}>Minimum Confidence (0–1)</AppText>
                         <TextInput
-                          value={String(patientSettings.min_confidence)}
-                          onChangeText={(t) => {
-                            const v = Number(String(t).replace(/[^0-9.]/g, ''));
-                            if (!Number.isFinite(v)) return;
-                            patchPatientSettings('min_confidence', Math.max(0, Math.min(1, v)));
+                          value={minConfidenceDraft}
+                          onChangeText={(t) => setMinConfidenceDraft(sanitizeMinConfidenceDraft(t))}
+                          onBlur={() => {
+                            const parsed = parseMinConfidenceForSave(minConfidenceDraft);
+                            if (parsed === null) {
+                              setMinConfidenceDraft(
+                                minConfidenceNumberToDraft(patientSettings.min_confidence),
+                              );
+                              return;
+                            }
+                            patchPatientSettings('min_confidence', parsed);
+                            setMinConfidenceDraft(minConfidenceNumberToDraft(parsed));
                           }}
-                          keyboardType="numeric"
+                          keyboardType="decimal-pad"
                           style={styles.recFormInput}
                           editable={!patientSettingsSaving}
                         />
                         <AppText style={styles.recFormHelper}>
-                          Higher value reduces false alerts but may miss weak signals.
-                        </AppText>
-                      </View>
-                      <View style={styles.recFormField}>
-                        <AppText style={styles.recFormLabel}>Require consecutive detections (1–5)</AppText>
-                        <TextInput
-                          value={String(patientSettings.require_consecutive)}
-                          onChangeText={(t) => {
-                            const v = Number(String(t).replace(/[^\d]/g, ''));
-                            if (!Number.isFinite(v)) return;
-                            patchPatientSettings('require_consecutive', Math.max(1, Math.min(5, v)));
-                          }}
-                          keyboardType="number-pad"
-                          style={styles.recFormInput}
-                          editable={!patientSettingsSaving}
-                        />
-                        <AppText style={styles.recFormHelper}>
-                          Example: 2 means the same word must be detected twice before alerting.
+                          Same threshold as the notification bell: detections below this value are ignored for alerts.
                         </AppText>
                       </View>
                     </>
@@ -3150,79 +4210,29 @@ const handleAddPatient = async () => {
                 </View>
 
                 <View style={styles.recFormPanel}>
-                  <AppText style={styles.recPanelTitle}>Accessibility & privacy</AppText>
+                  <AppText style={styles.recPanelTitle}>Security & Privacy</AppText>
                   {patientSettings ? (
-                    <>
-                      <View style={styles.adminSettingRow}>
-                        <View style={styles.adminSettingTextCol}>
-                          <AppText style={styles.adminSettingLabel}>Large text</AppText>
-                          <AppText style={styles.adminSettingHelper}>Improves readability</AppText>
-                        </View>
-                        <Switch
-                          value={patientSettings.text_size === 'large'}
-                          onValueChange={(v) => patchPatientSettings('text_size', v ? 'large' : 'normal')}
-                          trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
-                          thumbColor={colors.background.white}
-                          disabled={patientSettingsSaving}
-                        />
-                      </View>
-                      <View style={styles.adminSettingRow}>
-                        <View style={styles.adminSettingTextCol}>
-                          <AppText style={styles.adminSettingLabel}>High contrast</AppText>
-                          <AppText style={styles.adminSettingHelper}>Stronger UI contrast</AppText>
-                        </View>
-                        <Switch
-                          value={patientSettings.high_contrast}
-                          onValueChange={(v) => patchPatientSettings('high_contrast', v)}
-                          trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
-                          thumbColor={colors.background.white}
-                          disabled={patientSettingsSaving}
-                        />
-                      </View>
-                      <View style={styles.recFormField}>
-                        <AppText style={styles.recFormLabel}>Data retention (days)</AppText>
-                        <TextInput
-                          value={String(patientSettings.data_retention_days)}
-                          onChangeText={(t) => {
-                            const v = Number(String(t).replace(/[^\d]/g, ''));
-                            if (!Number.isFinite(v)) return;
-                            patchPatientSettings('data_retention_days', Math.max(7, Math.min(3650, v)));
-                          }}
-                          keyboardType="number-pad"
-                          style={styles.recFormInput}
-                          editable={!patientSettingsSaving}
-                        />
-                        <AppText style={styles.recFormHelper}>How long session history is kept.</AppText>
-                      </View>
-                      <TouchableOpacity
-                        style={[styles.adminGhostButton, { alignSelf: 'flex-start' }]}
-                        onPress={() => {
-                          const url = patientSessionsExportUrl(String(user?.id ?? ''));
-                          if (Platform.OS === 'web') {
-                            window.open(url, '_blank');
-                          }
-                        }}
-                      >
-                        <Ionicons name="download-outline" size={16} color={colors.text.primary} />
-                        <AppText style={styles.adminGhostButtonText}>Export my sessions (CSV)</AppText>
-                      </TouchableOpacity>
-                      {Platform.OS !== 'web' ? (
-                        <AppText style={styles.recFormHelper}>
-                          Export is available on web in this build.
+                    <View style={styles.adminSettingRow}>
+                      <View style={styles.adminSettingTextCol}>
+                        <AppText style={styles.adminSettingLabel}>Use my recorded data to improve M2M</AppText>
+                        <AppText style={styles.adminSettingHelper}>
+                          When on, saved EEG session data may be used in an anonymized way to improve decoding and
+                          the app. You can turn this off anytime.
                         </AppText>
-                      ) : null}
-                    </>
+                      </View>
+                      <Switch
+                        value={patientSettings.recorded_data_usage_allowed}
+                        onValueChange={(v) => patchPatientSettings('recorded_data_usage_allowed', v)}
+                        trackColor={{ false: colors.primary[100], true: colors.logo.oceanGreen }}
+                        thumbColor={colors.background.white}
+                        disabled={patientSettingsSaving}
+                      />
+                    </View>
                   ) : (
-                    <AppText style={styles.recFormHelper}>Preferences unavailable.</AppText>
+                    <AppText style={styles.recFormHelper}>Load preferences to manage data use.</AppText>
                   )}
-                </View>
-              </View>
-
-              <View style={styles.recSettingsRow}>
-                <View style={styles.recFormPanel}>
-                  <AppText style={styles.recPanelTitle}>Security</AppText>
-                  <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>Current password</AppText>
+                  <View style={[styles.recFormField, { marginTop: spacing.lg }]}>
+                    <AppText style={styles.recFormLabel}>Current Password</AppText>
                     <TextInput
                       value={currentPassword}
                       onChangeText={setCurrentPassword}
@@ -3232,7 +4242,7 @@ const handleAddPatient = async () => {
                     />
                   </View>
                   <View style={styles.recFormField}>
-                    <AppText style={styles.recFormLabel}>New password</AppText>
+                    <AppText style={styles.recFormLabel}>New Password</AppText>
                     <TextInput
                       value={newPassword}
                       onChangeText={setNewPassword}
@@ -3264,49 +4274,8 @@ const handleAddPatient = async () => {
                   </TouchableOpacity>
                 </View>
               </View>
-
-              <View style={styles.recFormActions}>
-                {profileMessage ? (
-                  <View
-                    style={[
-                      styles.adminFormMessage,
-                      profileMessage.type === 'error' ? styles.adminFormMessageError : styles.adminFormMessageSuccess,
-                    ]}
-                  >
-                    <AppText style={styles.adminFormMessageText}>{profileMessage.text}</AppText>
-                  </View>
-                ) : null}
-                {patientSettingsMessage ? (
-                  <View
-                    style={[
-                      styles.adminFormMessage,
-                      patientSettingsMessage.type === 'error'
-                        ? styles.adminFormMessageError
-                        : styles.adminFormMessageSuccess,
-                    ]}
-                  >
-                    <AppText style={styles.adminFormMessageText}>{patientSettingsMessage.text}</AppText>
-                  </View>
-                ) : null}
-                <View style={{ flexDirection: 'row', gap: 12, flexWrap: 'wrap' as any }}>
-                  <TouchableOpacity style={[styles.adminPrimaryButton, styles.recSaveButton]} onPress={handleSaveProfile}>
-                    <Ionicons name="save-outline" size={16} color={colors.text.white} />
-                    <AppText style={styles.adminPrimaryButtonText}>Save profile</AppText>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.adminGhostButton, patientSettingsSaving && { opacity: 0.7 }]}
-                    onPress={handleSavePatientSettings}
-                    disabled={patientSettingsSaving || !patientSettings}
-                  >
-                    <Ionicons name="options-outline" size={16} color={colors.text.primary} />
-                    <AppText style={styles.adminGhostButtonText}>
-                      {patientSettingsSaving ? 'Saving…' : 'Save preferences'}
-                    </AppText>
-                  </TouchableOpacity>
-                </View>
-              </View>
             </View>
-          </View>
+          </SettingsPageGlassCard>
         </View>
       );
     }
@@ -3323,7 +4292,26 @@ const handleAddPatient = async () => {
                 </View>
                 <View style={styles.adminStatTextCol}>
                   <AppText style={styles.adminStatLabel}>{stat.label}</AppText>
-                  <AppText style={styles.adminStatValue}>{stat.value}</AppText>
+                  {'valueEnd' in stat && stat.valueEnd ? (
+                    <View style={[styles.adminStatValueRow, styles.adminStatRecipientValueLift]}>
+                      <AppText
+                        style={[styles.adminStatValue, styles.adminStatValueRowEnd, styles.adminStatValueEn]}
+                        numberOfLines={1}
+                      >
+                        {stat.valueEnd}
+                      </AppText>
+                      <AppText
+                        style={[styles.adminStatValue, styles.adminStatValueRowEnd, styles.adminStatValueAr]}
+                        numberOfLines={1}
+                      >
+                        {stat.value}
+                      </AppText>
+                    </View>
+                  ) : (
+                    <AppText style={[styles.adminStatValue, styles.adminStatRecipientValueLift]}>
+                      {stat.value}
+                    </AppText>
+                  )}
                   <AppText style={styles.adminStatNote}>{stat.note}</AppText>
                 </View>
               </View>
@@ -3335,97 +4323,121 @@ const handleAddPatient = async () => {
           <View style={styles.eegCard}>
             <View style={styles.cardHeaderRow}>
               <View style={styles.cardHeaderLeft}>
-                <AppText style={styles.cardTitle}>EEG session activity</AppText>
+                <AppText style={styles.cardTitle}>EEG Session Activity</AppText>
                 <AppText style={styles.cardSubtitle}>
                   Live brain signal trend (mock data)
                 </AppText>
               </View>
-              <View style={styles.recControlsRow}>
+              <View style={styles.recHeaderTimerCenter}>
+                <AppText style={styles.recHeaderTimerText}>{eegLiveTimerLabel}</AppText>
+              </View>
+              <View style={styles.recHeaderRightArea}>
                 <View style={styles.specSessionControls}>
-                  <TouchableOpacity style={[styles.adminPrimaryButton, styles.specSessionButton]}>
+                  <TouchableOpacity
+                    style={[styles.adminPrimaryButton, styles.specSessionButton, eegLiveRunning && { opacity: 0.7 }]}
+                    onPress={handleStartEegLive}
+                    disabled={eegLiveRunning}
+                  >
                     <Ionicons name="play" size={16} color={colors.text.white} />
-                    <AppText style={styles.adminPrimaryButtonText}>Start</AppText>
+                    <AppText style={styles.adminPrimaryButtonText}>{eegLiveRunning ? 'Running…' : 'Start'}</AppText>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.adminGhostButton, styles.specSessionButton]}>
+                  <TouchableOpacity
+                    style={[styles.adminGhostButton, styles.specSessionButton, !eegLiveRunning && { opacity: 0.7 }]}
+                    onPress={handleStopEegLive}
+                    disabled={!eegLiveRunning}
+                  >
                     <Ionicons name="stop" size={16} color={colors.text.primary} />
                     <AppText style={styles.adminGhostButtonText}>Stop</AppText>
                   </TouchableOpacity>
-                </View>
-                <View style={styles.recStatusCol}>
-                  <View style={styles.specConnStatusRow}>
-                    <View style={[styles.adminStatusPill, styles.adminPillSuccess]}>
-                      <AppText style={styles.adminStatusText}>{recDashboardState.status}</AppText>
-                    </View>
-                    <AppText style={styles.adminTableSubtitle}>Timer: {recDashboardState.timer}</AppText>
-                  </View>
-                  <AppText style={styles.recAlertText}>Critical: {recDashboardState.alert}</AppText>
                 </View>
               </View>
             </View>
 
             <View style={styles.graphArea}>
               <View style={styles.graphBackground}>
-                <EegMiniChart />
+                <EegMiniChart
+                  activityKey={eegPredictResult?.predicted_word_ar ?? '—'}
+                  intensity={eegPredictResult?.confidence ?? 0}
+                  running={eegLiveRunning}
+                />
               </View>
               <View style={{ marginTop: spacing.md }}>
-                <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center', flexWrap: 'wrap' as any }}>
-                  <TouchableOpacity
-                    style={[styles.adminPrimaryButton, { paddingHorizontal: 14, paddingVertical: 10 }, eegPredictLoading && { opacity: 0.7 }]}
-                    onPress={handleRunEegInference}
-                    disabled={eegPredictLoading}
-                  >
-                    <Ionicons name="hardware-chip-outline" size={16} color={colors.text.white} />
-                    <AppText style={styles.adminPrimaryButtonText}>
-                      {eegPredictLoading ? 'Running…' : 'Run inference'}
-                    </AppText>
-                  </TouchableOpacity>
-                  {eegPredictError ? (
-                    <AppText style={[styles.recFormHelper, { color: colors.status.error }]}>{eegPredictError}</AppText>
-                  ) : (
-                    <AppText style={styles.recFormHelper}>
-                      Word: {recDashboardState.detectedWord} • Conf: {recDashboardState.confidenceLabel}
-                    </AppText>
-                  )}
-                </View>
-                {eegPredictResult?.class_names?.length ? (
-                  <View style={{ marginTop: 10 }}>
-                    {eegPredictResult.class_names.map((name, idx) => (
-                      <AppText key={`${name}-${idx}`} style={styles.recFormHelper}>
-                        {name}: {Math.round((eegPredictResult.probs?.[idx] ?? 0) * 100)}%
-                      </AppText>
-                    ))}
-                  </View>
+                {eegPredictError ? (
+                  <AppText style={[styles.recFormHelper, { color: colors.status.error }]}>
+                    {eegPredictError}
+                  </AppText>
                 ) : null}
-              </View>
-              <View style={styles.bandRow}>
-                <View style={styles.bandItem}>
-                  <AppText style={styles.bandLabel}>Delta</AppText>
-                  <View style={styles.bandBarTrack}>
-                    <View style={[styles.bandBarFill, { width: '35%' }]} />
+                <View style={styles.recPredictionBlock}>
+                  <AppText style={styles.recPredictionLabel}>Predicted Word</AppText>
+                  <View style={styles.recPredictionCard}>
+                    <View style={styles.recPredictionWordRow}>
+                      <View style={styles.recPredictionSideSlot} />
+                      <View style={styles.recPredictionWordCenter}>
+                        <Pressable
+                          onPress={() => {
+                            if (recDashboardState.detectedWordEn) {
+                              setEegPredictWordShowEn((v) => !v);
+                            }
+                          }}
+                          disabled={!recDashboardState.detectedWordEn}
+                          style={({ pressed }) => [
+                            styles.recPredictionWordPressable,
+                            Boolean(recDashboardState.detectedWordEn) &&
+                              pressed &&
+                              styles.recPredictionWordPressablePressed,
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: !recDashboardState.detectedWordEn }}
+                          accessibilityHint={
+                            recDashboardState.detectedWordEn
+                              ? 'Tap to switch between Arabic and English'
+                              : undefined
+                          }
+                        >
+                          <AppText
+                            style={[
+                              styles.recPredictionValue,
+                              eegPredictWordShowEn &&
+                                recDashboardState.detectedWordEn &&
+                                styles.recPredictionValueLatin,
+                            ]}
+                          >
+                            {recDashboardState.detectedWord === '—'
+                              ? '—'
+                              : eegPredictWordShowEn && recDashboardState.detectedWordEn
+                                ? recDashboardState.detectedWordEn
+                                : recDashboardState.detectedWord}
+                          </AppText>
+                        </Pressable>
+                      </View>
+                      <View style={styles.recPredictionSideSlot}>
+                        {eegPredictResult &&
+                        recDashboardState.detectedWord !== '—' &&
+                        (eegPredictResult.confidence ?? 0) >= EEG_HIGH_CONF_ALERT_THRESHOLD ? (
+                          <View style={styles.recPredictionAlertIconWrap}>
+                            <Image
+                              source={require('../../../assets/warning.png')}
+                              style={styles.recPredictionWarningIcon}
+                              accessibilityLabel="High confidence alert"
+                            />
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                    <AppText style={styles.recPredictionFooter}>
+                      {recDashboardState.confidenceLabel !== '—' ? `Confidence: ${recDashboardState.confidenceLabel}` : ' '}
+                    </AppText>
+                    {recDashboardState.detectedWord !== '—' &&
+                    (eegPredictResult?.confidence ?? 0) >= EEG_HIGH_CONF_ALERT_THRESHOLD
+                      ? (() => {
+                          const sentenceAr = liveDemoHighConfSentenceAr(recDashboardState.detectedWord);
+                          return sentenceAr ? (
+                            <AppText style={styles.recPredictionHighConfMatch}>{sentenceAr}</AppText>
+                          ) : null;
+                        })()
+                      : null}
                   </View>
                 </View>
-                <View style={styles.bandItem}>
-                  <AppText style={styles.bandLabel}>Theta</AppText>
-                  <View style={styles.bandBarTrack}>
-                    <View style={[styles.bandBarFill, { width: '55%' }]} />
-                  </View>
-                </View>
-                <View style={styles.bandItem}>
-                  <AppText style={styles.bandLabel}>Alpha</AppText>
-                  <View style={styles.bandBarTrack}>
-                    <View style={[styles.bandBarFill, { width: '70%' }]} />
-                  </View>
-                </View>
-                <View style={styles.bandItem}>
-                  <AppText style={styles.bandLabel}>Beta</AppText>
-                  <View style={styles.bandBarTrack}>
-                    <View style={[styles.bandBarFill, { width: '45%' }]} />
-                  </View>
-                </View>
-              </View>
-              <View style={styles.graphFooterRow}>
-                <AppText style={styles.graphFooterLabel}>Current session</AppText>
-                <AppText style={styles.graphFooterValue}>On-going</AppText>
               </View>
             </View>
           </View>
@@ -3627,7 +4639,7 @@ const handleAddPatient = async () => {
   const headerLogo = (
     <TouchableOpacity
       style={styles.headerLeft}
-      onPress={() => navigation.navigate('Dashboard')}
+      onPress={() => navigation.navigate('Landing')}
       activeOpacity={0.7}
     >
       <TouchableOpacity
@@ -3695,9 +4707,10 @@ const handleAddPatient = async () => {
       {/* Shared soft gradient + orb particles (Landing/Login/Dashboard) */}
       <AppBackground />
 
-      <AppHeader 
+      <AppHeader
         logo={headerLogo}
         showLogo={false}
+        showNotifications={isUser || role === 'patient' || role === 'specialist'}
       />
 
       {/* Main dashboard layout */}
@@ -3882,22 +4895,20 @@ const styles = StyleSheet.create({
   eegCard: {
     flexGrow: 2,
     minWidth: 260,
-    backgroundColor: colors.glass.medium,
+    backgroundColor: colors.background.white,
     borderRadius: 20,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: colors.glass.border,
+    borderColor: colors.primary[100],
     ...(Platform.OS === 'web'
       ? {
-          boxShadow: '0 18px 40px rgba(55, 93, 152, 0.18)',
-          backdropFilter: 'blur(18px)',
-          WebkitBackdropFilter: 'blur(18px)',
+          boxShadow: '0 10px 26px rgba(56,131,141,0.12)',
         }
       : {
           shadowColor: colors.primary[400],
           shadowOffset: { width: 0, height: 6 },
-          shadowOpacity: 0.16,
-          shadowRadius: 12,
+          shadowOpacity: 0.14,
+          shadowRadius: 10,
           elevation: 4,
         }),
   },
@@ -4380,6 +5391,30 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
     marginBottom: spacing.xs / 4,
   },
+  /** Recipient stat cards: lift main value toward icon vertical center (same for single + dual line). */
+  adminStatRecipientValueLift: {
+    marginTop: -6,
+  },
+  adminStatValueRow: {
+    flexDirection: 'row',
+    direction: 'ltr',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    gap: spacing.sm,
+    marginBottom: spacing.xs / 4,
+  },
+  adminStatValueRowEnd: {
+    flexShrink: 1,
+    marginBottom: 0,
+  },
+  adminStatValueEn: {
+    color: colors.text.secondary,
+    textAlign: 'left',
+  },
+  adminStatValueAr: {
+    textAlign: 'right',
+  },
   adminStatNote: {
     fontSize: typography.sizes.sm,
     color: colors.text.secondary,
@@ -4418,6 +5453,44 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'stretch',
     minHeight: 700,
+  },
+  /** Settings hub: frosted shell + particles (aligned with AppHeader glass language). */
+  settingsGlassShell: {
+    position: 'relative',
+    overflow: 'hidden',
+    backgroundColor:
+      Platform.OS === 'web' ? 'rgba(255, 255, 255, 0.32)' : 'rgba(255, 255, 255, 0.26)',
+    borderColor:
+      Platform.OS === 'web' ? 'rgba(255, 255, 255, 0.42)' : colors.primary[100],
+    ...(Platform.OS === 'web'
+      ? {
+          backdropFilter: 'blur(20px)',
+          WebkitBackdropFilter: 'blur(20px)',
+          boxShadow: '0 18px 44px rgba(55, 93, 152, 0.12)',
+        }
+      : {
+          shadowColor: colors.primary[500],
+          shadowOffset: { width: 0, height: 8 },
+          shadowOpacity: 0.12,
+          shadowRadius: 16,
+          elevation: 5,
+        }),
+  },
+  settingsParticlesWrap: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 0,
+    overflow: 'hidden',
+  },
+  settingsGlassShimmer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+    overflow: 'hidden',
+  },
+  settingsGlassInner: {
+    position: 'relative',
+    zIndex: 2,
+    flex: 1,
+    gap: spacing.sm,
   },
   specSessionControls: {
     flexDirection: 'row',
@@ -4572,6 +5645,224 @@ const styles = StyleSheet.create({
   recFormHelper: {
     fontSize: typography.sizes.xs,
     color: colors.text.secondary,
+  },
+  recPredictionBlock: {
+    marginTop: spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recPredictionLabel: {
+    fontSize: typography.sizes.xs,
+    color: colors.text.secondary,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  recPredictionCard: {
+    minWidth: 240,
+    maxWidth: 520,
+    width: '100%',
+    alignSelf: 'center',
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
+    ...(Platform.OS === 'web'
+      ? ({ boxShadow: '0 8px 24px rgba(15, 23, 42, 0.10)' } as any)
+      : ({
+          shadowColor: '#0f172a',
+          shadowOpacity: 0.08,
+          shadowRadius: 12,
+          shadowOffset: { width: 0, height: 8 },
+          elevation: 3,
+        } as any)),
+  },
+  recPredictionWordRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  recPredictionSideSlot: {
+    width: EEG_ALERT_ICON_SLOT,
+    minWidth: EEG_ALERT_ICON_SLOT,
+    height: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recPredictionWordPressable: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 120,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    borderRadius: 12,
+  },
+  recPredictionWordPressablePressed: {
+    opacity: 0.88,
+  },
+  /** When showing English gloss, avoid forcing RTL on Latin text (Android). */
+  recPredictionValueLatin: {
+    ...(Platform.OS !== 'web' && { writingDirection: 'ltr' as const }),
+  },
+  recPredictionWordCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 0,
+  },
+  recPredictionAlertIconWrap: {
+    width: 52,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recPredictionWarningIcon: {
+    width: 52,
+    height: 52,
+    resizeMode: 'contain',
+  },
+  recPredictionValue: {
+    fontSize: 40,
+    fontWeight: typography.weights.bold,
+    color: colors.text.primary,
+    textAlign: 'center',
+    lineHeight: 52,
+    ...(Platform.OS !== 'web' && { writingDirection: 'rtl' as const }),
+  },
+  recPredictionFooter: {
+    marginTop: 10,
+    fontSize: typography.sizes.sm,
+    color: colors.text.secondary,
+    textAlign: 'center',
+    opacity: 0.9,
+  },
+  recPredictionHighConfMatch: {
+    marginTop: 8,
+    paddingHorizontal: spacing.sm,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.medium,
+    color: colors.text.primary,
+    textAlign: 'center',
+    lineHeight: 22,
+    ...(Platform.OS !== 'web' && { writingDirection: 'rtl' as const }),
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(2, 6, 23, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 820,
+    backgroundColor: colors.background.white,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.primary[100],
+    padding: spacing.lg,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.xs,
+  },
+  modalTitleDivider: {
+    height: 1,
+    backgroundColor: colors.primary[100],
+    marginBottom: spacing.sm,
+  },
+  modalTitle: {
+    fontSize: typography.sizes.lg,
+    fontWeight: typography.weights.semibold,
+    color: colors.text.primary,
+  },
+  reportSectionTitle: {
+    fontSize: typography.sizes.base,
+    fontWeight: typography.weights.semibold,
+    color: colors.text.primary,
+    marginBottom: spacing.xs,
+  },
+  reportModalScroll: {
+    maxHeight: 520,
+    ...(Platform.OS === 'web'
+      ? { scrollbarWidth: 'none' as const, msOverflowStyle: 'none' as const }
+      : {}),
+  },
+  reportModalScrollContent: {
+    paddingBottom: spacing.md,
+  },
+  reportFieldStack: {
+    gap: 0,
+  },
+  reportSectionGroup: {
+    borderWidth: 1,
+    borderColor: 'rgba(55, 93, 152, 0.22)',
+    borderRadius: 14,
+    padding: spacing.md,
+    backgroundColor: colors.background.white,
+  },
+  reportSheetField: {
+    marginBottom: spacing.md,
+  },
+  reportSheetFieldLast: {
+    marginBottom: 0,
+  },
+  reportValueShell: {
+    borderWidth: 1,
+    borderColor: 'rgba(55, 93, 152, 0.18)',
+    borderRadius: 12,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.background.white,
+    marginTop: spacing.xs,
+  },
+  reportValueShellText: {
+    fontSize: typography.sizes.sm,
+    color: colors.text.primary,
+    fontWeight: typography.weights.medium,
+  },
+  reportValueShellSub: {
+    fontSize: typography.sizes.xs,
+    color: colors.text.secondary,
+    marginTop: 4,
+  },
+  reportPredictionCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(55, 93, 152, 0.22)',
+    backgroundColor: colors.background.white,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  reportPredictionMeta: {
+    fontSize: typography.sizes.xs,
+    fontWeight: typography.weights.semibold,
+    color: colors.logo.paradiso,
+    marginBottom: spacing.sm,
+  },
+  recHeaderRightArea: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-end',
+    gap: 12,
+    flexWrap: 'wrap' as any,
+  },
+  recHeaderTimerCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 10,
+  },
+  recHeaderTimerText: {
+    fontSize: typography.sizes.base,
+    fontWeight: typography.weights.semibold,
+    color: colors.text.primary,
   },
   recPanelTitle: {
     fontSize: typography.sizes.base,
@@ -4882,11 +6173,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.xs,
   },
+  /** Tinted to `colors.text.primary` like `download-outline`; use a simple / mostly-alpha PNG for best results. */
+  specReportFileIcon: {
+    width: 14,
+    height: 14,
+    resizeMode: 'contain',
+    tintColor: colors.text.primary,
+  },
   specReportPatientCol: {
     flex: 0.9,
   },
   specReportDateCol: {
     flex: 0.9,
+    textAlign: 'center',
   },
   adminTableCellActions: {
     flexDirection: 'row',

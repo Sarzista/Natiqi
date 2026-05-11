@@ -6,4 +6,13 @@ declare module '*.svg' {
   export default content;
 }
 
+declare module '*.wav' {
+  const src: number;
+  export default src;
+}
+
+declare module '*.gif' {
+  const src: number;
+  export default src;
+}
 

@@ -11,7 +11,7 @@ import json
 import io
 import csv
 
-from models import db, Admin, Specialist, Patient, RegisteredUser, EEGSession, Alert, SystemLog, Model, PatientSettings
+from models import db, Admin, Specialist, Patient, RegisteredUser, EEGSession, EEGSessionEvent, Alert, SystemLog, Model, PatientSettings, Notification, NotificationEvent
 import os
 import sys
 import uuid
@@ -29,6 +29,14 @@ except Exception as e:
     print(f'⚠️ ML import disabled: {e}')
     ModelNotReadyError = RuntimeError  # type: ignore
     predict_window = None  # type: ignore
+
+# ML live demo (RF 4-word from LiveDataModels)
+try:
+    from ml.eeg_rf_4word_demo import ModelNotReadyError as LiveDemoModelNotReadyError, predict_live_demo
+except Exception as e:
+    print(f'⚠️ Live-demo ML import disabled: {e}')
+    LiveDemoModelNotReadyError = RuntimeError  # type: ignore
+    predict_live_demo = None  # type: ignore
 
 # Windows consoles often use cp1252; avoid UnicodeEncodeError on log lines with emoji
 if hasattr(sys.stdout, "reconfigure"):
@@ -164,6 +172,23 @@ def ensure_patient_password_column(default_password: str = 'user@123'):
     except Exception as e:
         db.session.rollback()
         print(f'⚠️ ensure_patient_password_column: {e}')
+
+
+def ensure_patient_settings_recorded_data_usage_column():
+    """Add recorded_data_usage_allowed when upgrading an existing SQLite DB."""
+    try:
+        inspector = inspect(db.engine)
+        cols = {c['name'] for c in inspector.get_columns('patient_settings')}
+    except Exception:
+        return
+    if 'recorded_data_usage_allowed' not in cols:
+        with db.engine.begin() as conn:
+            conn.execute(
+                text(
+                    'ALTER TABLE patient_settings ADD COLUMN recorded_data_usage_allowed '
+                    'BOOLEAN NOT NULL DEFAULT 0'
+                )
+            )
 
 
 def generate_six_digit_code() -> str:
@@ -760,12 +785,47 @@ def admin_model_artifact_status():
     return jsonify(payload), 200
 
 
-@app.route('/admin/sessions', methods=['GET'])
-def admin_list_sessions():
-    limit = request.args.get('limit', default=100, type=int)
-    q = EEGSession.query.order_by(EEGSession.session_id.desc()).limit(max(1, min(limit, 500))).all()
+def _compute_top_predicted_word_from_events(events):
+    """Most frequent detected_word in events; avg confidence only for rows that match that word."""
+    counts = {}
+    sum_conf = {}
+    n_conf = {}
+    for e in events:
+        w = (getattr(e, 'detected_word', None) or '').strip()
+        if not w:
+            continue
+        counts[w] = counts.get(w, 0) + 1
+        if getattr(e, 'confidence', None) is not None:
+            cf = float(e.confidence)
+            sum_conf[w] = sum_conf.get(w, 0.0) + cf
+            n_conf[w] = n_conf.get(w, 0) + 1
+    if not counts:
+        return None, None
+    top_word = max(counts.keys(), key=lambda w: (counts[w], w))
+    if n_conf.get(top_word, 0) <= 0:
+        return top_word, None
+    return top_word, sum_conf[top_word] / n_conf[top_word]
+
+
+def _serialize_eeg_session_list(sessions):
+    """Bulk-load events and attach top_predicted_word + per-word avg confidence."""
     out = []
-    for s in q:
+    if not sessions:
+        return out
+    ids = [s.session_id for s in sessions]
+    ev_by = {}
+    if ids:
+        for ev in EEGSessionEvent.query.filter(EEGSessionEvent.session_id.in_(ids)).all():
+            ev_by.setdefault(ev.session_id, []).append(ev)
+    for s in sessions:
+        evs = ev_by.get(s.session_id, [])
+        top_w, top_avg = _compute_top_predicted_word_from_events(evs)
+        if not evs:
+            top_w = s.detected_word or ''
+            top_avg = float(s.confidence_level) if s.confidence_level is not None else None
+        else:
+            if not top_w:
+                top_w = s.detected_word or ''
         out.append({
             'session_id': s.session_id,
             'patient_national_id': str(s.patient_national_id),
@@ -775,11 +835,20 @@ def admin_list_sessions():
             'end_time': s.end_time.isoformat() if s.end_time else '',
             'detected_word': s.detected_word,
             'confidence_level': float(s.confidence_level) if s.confidence_level is not None else None,
+            'top_predicted_word': top_w,
+            'top_predicted_word_avg_confidence': top_avg,
             'device': s.device or '',
             'channels': int(s.channels) if s.channels is not None else 14,
             'session_status': s.session_status,
         })
-    return jsonify(out), 200
+    return out
+
+
+@app.route('/admin/sessions', methods=['GET'])
+def admin_list_sessions():
+    limit = request.args.get('limit', default=100, type=int)
+    q = EEGSession.query.order_by(EEGSession.session_id.desc()).limit(max(1, min(limit, 500))).all()
+    return jsonify(_serialize_eeg_session_list(q)), 200
 
 
 # ══════════════════════════════════════════════════════════
@@ -807,6 +876,33 @@ def ml_predict_window():
     except Exception as e:
         import traceback
         print('❌ /ml/predict-window error:')
+        traceback.print_exc()
+        return jsonify({'error': 'Inference failed'}), 500
+
+
+@app.route('/ml/live-demo/predict', methods=['POST'])
+def ml_live_demo_predict():
+    """
+    Demo-only: predicts one of the 4 critical words (جوع/عطش/حمام/دواء) using the
+    highest-accuracy RF artifacts under LiveDataModels, sampling from cleaned test rows.
+    """
+    if predict_live_demo is None:
+        return jsonify({'error': 'Live demo ML module not available on server'}), 500
+
+    data = request.get_json(silent=True) or {}
+    subject = str(data.get('subject') or 'aya').strip() or 'aya'
+    seed = data.get('seed', None)
+
+    try:
+        pred = predict_live_demo(subject=subject, seed=seed)
+        return jsonify(pred.to_json()), 200
+    except LiveDemoModelNotReadyError as e:
+        return jsonify({'error': str(e)}), 503
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception:
+        import traceback
+        print('❌ /ml/live-demo/predict error:')
         traceback.print_exc()
         return jsonify({'error': 'Inference failed'}), 500
 
@@ -881,6 +977,370 @@ def create_eeg_session_from_window():
         return jsonify({'error': 'Failed to save session'}), 500
 
 
+@app.route('/eeg/live-demo/sessions', methods=['POST'])
+def create_live_demo_session():
+    """
+    Demo-only: persist a live-demo EEGSession row (predicted word/confidence + time range).
+    Used by the recipient dashboard when pressing Stop.
+    """
+    data = request.get_json(silent=True) or {}
+    patient_national_id = str(data.get('patient_national_id', '')).strip()
+    device = (data.get('device') or 'EPOC X').strip()
+    detected_word = str(data.get('detected_word') or '').strip()
+    confidence = data.get('confidence', None)
+    events = data.get('events', None)  # [{event_time, detected_word, confidence}]
+    start_time = str(data.get('start_time') or '').strip()
+    end_time = str(data.get('end_time') or '').strip()
+
+    if not patient_national_id or not detected_word or confidence is None:
+        return jsonify({'error': 'patient_national_id, detected_word and confidence are required'}), 400
+
+    patient = Patient.query.filter_by(national_id=patient_national_id).first()
+    registered_user = RegisteredUser.query.filter_by(national_id=patient_national_id).first()
+    if not patient and not registered_user:
+        return jsonify({'error': 'Patient not found'}), 404
+
+    try:
+        conf_f = float(confidence)
+    except Exception:
+        return jsonify({'error': 'confidence must be a number'}), 400
+
+    def _parse_dt(s: str) -> datetime:
+        if not s:
+            return datetime.utcnow()
+        try:
+            # Accept ISO strings (with or without timezone 'Z')
+            return datetime.fromisoformat(s.replace('Z', '+00:00')).replace(tzinfo=None)
+        except Exception:
+            return datetime.utcnow()
+
+    st = _parse_dt(start_time)
+    et = _parse_dt(end_time) if end_time else datetime.utcnow()
+    m = _current_production_model()
+
+    # If we have events, compute summary fields (duration, avg confidence, most repeated word)
+    most_word = detected_word
+    avg_conf = conf_f
+    parsed_events: list[dict] = []
+    if isinstance(events, list) and len(events) > 0:
+        word_counts: dict[str, int] = {}
+        conf_sum = 0.0
+        conf_n = 0
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            w = str(ev.get('detected_word') or '').strip()
+            if not w:
+                continue
+            c = ev.get('confidence', None)
+            try:
+                c_f = float(c) if c is not None else None
+            except Exception:
+                c_f = None
+            t = _parse_dt(str(ev.get('event_time') or ''))
+            parsed_events.append({'event_time': t, 'detected_word': w, 'confidence': c_f})
+            word_counts[w] = word_counts.get(w, 0) + 1
+            if c_f is not None:
+                conf_sum += c_f
+                conf_n += 1
+        if word_counts:
+            most_word = max(word_counts.items(), key=lambda kv: kv[1])[0]
+        if conf_n > 0:
+            avg_conf = conf_sum / conf_n
+
+    try:
+        row = EEGSession(
+            patient_national_id=patient_national_id,
+            specialist_national_id=None,
+            model_id=(m.model_id if m else None),
+            start_time=st,
+            end_time=et,
+            detected_word=most_word,
+            confidence_level=Decimal(str(avg_conf)),
+            device=device,
+            channels=14,
+            session_status='Ended',
+        )
+        db.session.add(row)
+        db.session.commit()
+
+        # Persist events if provided
+        try:
+            for ev in parsed_events:
+                db.session.add(EEGSessionEvent(
+                    session_id=row.session_id,
+                    event_time=ev['event_time'],
+                    detected_word=ev['detected_word'],
+                    confidence=(Decimal(str(ev['confidence'])) if ev.get('confidence') is not None else None),
+                ))
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            print(f'⚠️ live-demo events save failed (session_id={row.session_id}): {e}')
+
+        return jsonify({'message': 'Live demo session saved', 'session_id': row.session_id}), 201
+    except Exception as e:
+        db.session.rollback()
+        print(f'❌ /eeg/live-demo/sessions db error: {e}')
+        return jsonify({'error': 'Failed to save live demo session'}), 500
+
+
+@app.route('/eeg/live-demo/sessions/<int:session_id>/report', methods=['GET'])
+def live_demo_session_report(session_id: int):
+    s = EEGSession.query.filter_by(session_id=session_id).first()
+    if not s:
+        return jsonify({'error': 'Session not found'}), 404
+
+    evs = EEGSessionEvent.query.filter_by(session_id=session_id).order_by(EEGSessionEvent.event_time.asc()).all()
+    events_out = []
+    word_counts: dict[str, int] = {}
+    conf_sum = 0.0
+    conf_n = 0
+
+    st = s.start_time or datetime.utcnow()
+    for e in evs:
+        word_counts[e.detected_word] = word_counts.get(e.detected_word, 0) + 1
+        c = float(e.confidence) if e.confidence is not None else None
+        if c is not None:
+            conf_sum += c
+            conf_n += 1
+        elapsed = int((e.event_time - st).total_seconds())
+        h = elapsed // 3600
+        m = (elapsed % 3600) // 60
+        sec = elapsed % 60
+        events_out.append({
+            'event_time': e.event_time.isoformat(),
+            'day': e.event_time.date().isoformat(),
+            'elapsed': f'{h:02d}:{m:02d}:{sec:02d}',
+            'detected_word': e.detected_word,
+            'confidence': c,
+        })
+
+    duration_sec = int((s.end_time - st).total_seconds()) if s.end_time else 0
+    avg_conf = (conf_sum / conf_n) if conf_n > 0 else (float(s.confidence_level) if s.confidence_level is not None else None)
+    most_word = max(word_counts.items(), key=lambda kv: kv[1])[0] if word_counts else s.detected_word
+
+    return jsonify({
+        'session_id': s.session_id,
+        'start_time': s.start_time.isoformat() if s.start_time else '',
+        'end_time': s.end_time.isoformat() if s.end_time else '',
+        'duration_seconds': duration_sec,
+        'avg_confidence': avg_conf,
+        'most_repeated_word': most_word,
+        'word_counts': word_counts,
+        'events': events_out,
+    }), 200
+
+
+@app.route('/eeg/live-demo/sessions/<int:session_id>/report.csv', methods=['GET'])
+def live_demo_session_report_csv(session_id: int):
+    s = EEGSession.query.filter_by(session_id=session_id).first()
+    if not s:
+        return jsonify({'error': 'Session not found'}), 404
+
+    evs = EEGSessionEvent.query.filter_by(session_id=session_id).order_by(EEGSessionEvent.event_time.asc()).all()
+    def _fmt_dt(dt):
+        if not dt:
+            return ''
+        try:
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            try:
+                return dt.isoformat()
+            except Exception:
+                return ''
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header summary
+    writer.writerow(['session_id', session_id])
+    writer.writerow(['start_time', _fmt_dt(s.start_time)])
+    writer.writerow(['end_time', _fmt_dt(s.end_time)])
+    try:
+        duration_sec = int((s.end_time - s.start_time).total_seconds()) if s.start_time and s.end_time else 0
+    except Exception:
+        duration_sec = 0
+    writer.writerow(['duration_seconds', duration_sec])
+    writer.writerow(['avg_confidence', float(s.confidence_level) if s.confidence_level is not None else ''])
+    writer.writerow([])
+
+    # Events table
+    writer.writerow(['elapsed', 'day', 'event_time', 'detected_word', 'confidence_percent'])
+    st = s.start_time or datetime.utcnow()
+    for e in evs:
+        elapsed = int((e.event_time - st).total_seconds())
+        h = elapsed // 3600
+        m = (elapsed % 3600) // 60
+        sec = elapsed % 60
+        c = float(e.confidence) if e.confidence is not None else None
+        writer.writerow([
+            f'{h:02d}:{m:02d}:{sec:02d}',
+            e.event_time.date().isoformat() if getattr(e, 'event_time', None) else '',
+            _fmt_dt(getattr(e, 'event_time', None)),
+            e.detected_word,
+            (round(c * 100, 2) if c is not None else ''),
+        ])
+
+    # Add UTF-8 BOM so Excel reads Arabic correctly.
+    csv_data = '\ufeff' + output.getvalue()
+    return Response(
+        csv_data,
+        mimetype='text/csv; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename=\"rs-{session_id}.csv\"'},
+    )
+
+
+@app.route('/eeg/live-demo/sessions/<int:session_id>/report.xlsx', methods=['GET'])
+def live_demo_session_report_xlsx(session_id: int):
+    s = EEGSession.query.filter_by(session_id=session_id).first()
+    if not s:
+        return jsonify({'error': 'Session not found'}), 404
+
+    evs = EEGSessionEvent.query.filter_by(session_id=session_id).order_by(EEGSessionEvent.event_time.asc()).all()
+
+    def _fmt_dt(dt):
+        if not dt:
+            return ''
+        try:
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            try:
+                return dt.isoformat()
+            except Exception:
+                return ''
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.utils import get_column_letter
+        from openpyxl.styles import Font, Alignment, PatternFill
+    except Exception as e:
+        return jsonify({'error': f'Excel export not available: {e}'}), 500
+
+    wb = Workbook()
+    # Rename default sheet to Session Info
+    ws_info = wb.active
+    ws_info.title = 'Session Info'
+    ws_pred = wb.create_sheet('Predictions')
+    ws_sum = wb.create_sheet('Summary')
+
+    header_font = Font(bold=True, color='FFFFFF')
+    header_fill = PatternFill('solid', fgColor='1F2937')
+    header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    cell_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    def _write_kv_table(ws, rows):
+        ws.append(['Field', 'Value'])
+        for r in ws[1]:
+            r.font = header_font
+            r.fill = header_fill
+            r.alignment = header_align
+        for k, v in rows:
+            ws.append([k, v])
+        ws.column_dimensions['A'].width = 22
+        ws.column_dimensions['B'].width = 44
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=2):
+            for c in row:
+                c.alignment = cell_align
+
+    try:
+        duration_sec = int((s.end_time - s.start_time).total_seconds()) if s.start_time and s.end_time else 0
+    except Exception:
+        duration_sec = 0
+    duration_label = f'{duration_sec // 3600:02d}:{(duration_sec % 3600) // 60:02d}:{duration_sec % 60:02d}'
+
+    _write_kv_table(ws_info, [
+        ('Session ID', s.session_id),
+        ('Start', _fmt_dt(s.start_time)),
+        ('End', _fmt_dt(s.end_time)),
+        ('Duration', duration_label),
+        ('Avg confidence', (float(s.confidence_level) if s.confidence_level is not None else '')),
+    ])
+
+    # Predictions sheet
+    pred_header = ['#', 'Elapsed', 'Day', 'Time', 'Predicted word', 'Confidence %']
+    ws_pred.append(pred_header)
+    for r in ws_pred[1]:
+        r.font = header_font
+        r.fill = header_fill
+        r.alignment = header_align
+
+    st = s.start_time or datetime.utcnow()
+    for idx, e in enumerate(evs, start=1):
+        try:
+            elapsed = int((e.event_time - st).total_seconds())
+        except Exception:
+            elapsed = 0
+        h = elapsed // 3600
+        m = (elapsed % 3600) // 60
+        sec = elapsed % 60
+        c = float(e.confidence) if e.confidence is not None else None
+        ws_pred.append([
+            idx,
+            f'{h:02d}:{m:02d}:{sec:02d}',
+            e.event_time.date().isoformat() if getattr(e, 'event_time', None) else '',
+            _fmt_dt(getattr(e, 'event_time', None)),
+            e.detected_word,
+            (round(c * 100, 2) if c is not None else ''),
+        ])
+
+    # Column widths
+    widths = [6, 12, 12, 20, 22, 14]
+    for i, w in enumerate(widths, start=1):
+        ws_pred.column_dimensions[get_column_letter(i)].width = w
+    for row in ws_pred.iter_rows(min_row=2, max_row=ws_pred.max_row, min_col=1, max_col=len(pred_header)):
+        for c in row:
+            c.alignment = cell_align
+
+    # Summary sheet
+    word_counts = {}
+    conf_sum = 0.0
+    conf_n = 0
+    for e in evs:
+        word_counts[e.detected_word] = word_counts.get(e.detected_word, 0) + 1
+        c = float(e.confidence) if e.confidence is not None else None
+        if c is not None:
+            conf_sum += c
+            conf_n += 1
+
+    most_word = max(word_counts.items(), key=lambda kv: kv[1])[0] if word_counts else (s.detected_word or '')
+    most_count = int(word_counts.get(most_word, 0)) if most_word else 0
+    avg_conf = (conf_sum / conf_n) if conf_n > 0 else (float(s.confidence_level) if s.confidence_level is not None else None)
+
+    ws_sum.append(['Metric', 'Value'])
+    for r in ws_sum[1]:
+        r.font = header_font
+        r.fill = header_fill
+        r.alignment = header_align
+    ws_sum.append(['Total predictions', len(evs)])
+    ws_sum.append(['Most repeated word', most_word])
+    ws_sum.append(['Most repeated count', most_count])
+    ws_sum.append(['Avg confidence', (round(avg_conf * 100, 2) if avg_conf is not None else '')])
+    ws_sum.append([])
+    ws_sum.append(['Word', 'Count'])
+    for r in ws_sum[ws_sum.max_row]:
+        r.font = header_font
+        r.fill = header_fill
+        r.alignment = header_align
+    for w, n in sorted(word_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        ws_sum.append([w, int(n)])
+
+    ws_sum.column_dimensions['A'].width = 26
+    ws_sum.column_dimensions['B'].width = 20
+    for row in ws_sum.iter_rows(min_row=2, max_row=ws_sum.max_row, min_col=1, max_col=2):
+        for c in row:
+            c.alignment = cell_align
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return Response(
+        bio.getvalue(),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename=\"rs-{session_id}.xlsx\"'},
+    )
+
+
 # ══════════════════════════════════════════════════════════
 #   SPECIALIST: Sessions
 # ══════════════════════════════════════════════════════════
@@ -898,22 +1358,7 @@ def specialist_list_sessions():
         q = q.filter(EEGSession.patient_national_id == patient_id)
 
     sessions = q.order_by(EEGSession.session_id.desc()).limit(max(1, min(limit, 500))).all()
-    out = []
-    for s in sessions:
-        out.append({
-            'session_id': s.session_id,
-            'patient_national_id': str(s.patient_national_id),
-            'specialist_national_id': (str(s.specialist_national_id) if s.specialist_national_id else ''),
-            'model_id': s.model_id,
-            'start_time': s.start_time.isoformat() if s.start_time else '',
-            'end_time': s.end_time.isoformat() if s.end_time else '',
-            'detected_word': s.detected_word,
-            'confidence_level': float(s.confidence_level) if s.confidence_level is not None else None,
-            'device': s.device or '',
-            'channels': int(s.channels) if s.channels is not None else 14,
-            'session_status': s.session_status,
-        })
-    return jsonify(out), 200
+    return jsonify(_serialize_eeg_session_list(sessions)), 200
 
 
 # ══════════════════════════════════════════════════════════
@@ -1219,16 +1664,6 @@ def put_patient_settings():
                 return jsonify({'error': 'min_confidence must be between 0 and 1'}), 400
             s.min_confidence = Decimal(str(round(mc_f, 4)))
 
-        rc = data.get('require_consecutive', None)
-        if rc is not None:
-            rc_i = int(rc)
-            if rc_i < 1 or rc_i > 5:
-                return jsonify({'error': 'require_consecutive must be between 1 and 5'}), 400
-            s.require_consecutive = rc_i
-
-        if 'calibration_enabled' in data:
-            s.calibration_enabled = bool(data.get('calibration_enabled'))
-
         if 'text_size' in data:
             ts = str(data.get('text_size') or '').strip().lower()
             if ts not in ('normal', 'large'):
@@ -1247,6 +1682,9 @@ def put_patient_settings():
 
         if 'preferred_device' in data:
             s.preferred_device = str(data.get('preferred_device') or 'EPOC X').strip()[:50]
+
+        if 'recorded_data_usage_allowed' in data:
+            s.recorded_data_usage_allowed = bool(data.get('recorded_data_usage_allowed'))
 
         s.updated_at = datetime.utcnow()
         db.session.commit()
@@ -1316,6 +1754,187 @@ def patient_export_sessions_csv():
 
 
 # ══════════════════════════════════════════════════════════
+#   NOTIFICATIONS (Recipient bell)
+# ══════════════════════════════════════════════════════════
+
+def _notification_word_enabled(settings: PatientSettings, detected_word: str) -> bool:
+    """
+    Map detected word (Arabic) to the recipient's notification toggles (Alerts & safety).
+    Used with min_confidence in /notifications/event to decide bell entries.
+    """
+    w = (detected_word or '').strip()
+    if not w:
+        return False
+
+    # Arabic vocab used in demo:
+    # 'حمام' bathroom, 'إنذار'/'انذار' alarm, 'عطش' thirst, 'جوع' hunger, 'دواء' medicine
+    if w == 'جوع':
+        return bool(settings.notify_hunger)
+    if w == 'عطش':
+        return bool(settings.notify_thirst)
+    if w in ('انذار', 'إنذار'):
+        return bool(settings.notify_alarm)
+    if w == 'حمام':
+        return bool(settings.notify_bathroom)
+    if w == 'دواء':
+        return bool(settings.notify_medicine)
+
+    # For 'نعم' / 'لا' or unknown words: never notify by default.
+    return False
+
+
+def _parse_event_time(v) -> datetime:
+    if isinstance(v, datetime):
+        return v
+    s = str(v or '').strip()
+    if not s:
+        return datetime.utcnow()
+    try:
+        return datetime.fromisoformat(s.replace('Z', '+00:00'))
+    except Exception:
+        return datetime.utcnow()
+
+
+@app.route('/notifications/event', methods=['POST'])
+def notifications_event():
+    data = request.get_json(silent=True) or {}
+    patient_national_id = str(data.get('patient_national_id', '') or '').strip()
+    detected_word = str(data.get('detected_word', '') or '').strip()
+    confidence_raw = data.get('confidence', None)
+    event_time = _parse_event_time(data.get('event_time', None))
+
+    if not patient_national_id:
+        return jsonify({'error': 'patient_national_id is required'}), 400
+    if not detected_word:
+        return jsonify({'error': 'detected_word is required'}), 400
+
+    try:
+        conf = float(confidence_raw) if confidence_raw is not None else None
+    except Exception:
+        conf = None
+
+    # Ensure settings row exists and apply policy.
+    settings = _get_or_create_patient_settings(patient_national_id)
+    min_conf = float(settings.min_confidence) if settings.min_confidence is not None else 0.0
+
+    # Always record raw event (history / future rules).
+    try:
+        db.session.add(NotificationEvent(
+            patient_national_id=patient_national_id,
+            detected_word=detected_word,
+            confidence=(Decimal(str(conf)) if conf is not None else None),
+            event_time=event_time,
+        ))
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to record notification event: {e}'}), 500
+
+    created = False
+    notification_row = None
+
+    # Bell notifications: (1) word toggle on, (2) confidence >= minimum. No extra consecutive gate.
+    if _notification_word_enabled(settings, detected_word) and (conf is not None and conf >= min_conf):
+        # Basic de-dupe: don't create two notifications for the same word within the last second
+        recent = (
+            Notification.query
+            .filter_by(patient_national_id=patient_national_id, detected_word=detected_word, seen=False)
+            .order_by(Notification.event_time.desc(), Notification.notification_id.desc())
+            .first()
+        )
+        if recent and recent.event_time and abs((event_time - recent.event_time).total_seconds()) < 1.0:
+            created = False
+            notification_row = None
+        else:
+            try:
+                row = Notification(
+                    patient_national_id=patient_national_id,
+                    detected_word=detected_word,
+                    confidence=(Decimal(str(conf)) if conf is not None else None),
+                    event_time=event_time,
+                    seen=False,
+                )
+                db.session.add(row)
+                db.session.commit()
+                created = True
+                notification_row = row
+            except Exception as e:
+                db.session.rollback()
+                return jsonify({'error': f'Failed to create notification: {e}'}), 500
+
+    unseen_count = (
+        Notification.query
+        .filter_by(patient_national_id=patient_national_id, seen=False)
+        .count()
+    )
+
+    return jsonify({
+        'created': bool(created),
+        'notification': (notification_row.to_dict() if notification_row else None),
+        'unseen_count': int(unseen_count),
+    }), 200
+
+
+@app.route('/notifications', methods=['GET'])
+def list_notifications():
+    national_id = str(request.args.get('national_id', '') or '').strip()
+    if not national_id:
+        return jsonify({'error': 'national_id is required'}), 400
+    limit = request.args.get('limit', default=20, type=int)
+    offset = request.args.get('offset', default=0, type=int)
+    limit = max(1, min(int(limit), 100))
+    offset = max(0, int(offset))
+
+    q = Notification.query.filter_by(patient_national_id=national_id).order_by(Notification.event_time.desc(), Notification.notification_id.desc())
+    rows = q.offset(offset).limit(limit).all()
+    unseen_count = Notification.query.filter_by(patient_national_id=national_id, seen=False).count()
+    return jsonify({
+        'items': [r.to_dict() for r in rows],
+        'unseen_count': int(unseen_count),
+    }), 200
+
+
+@app.route('/notifications/<int:notification_id>/seen', methods=['PUT'])
+def mark_notification_seen(notification_id: int):
+    data = request.get_json(silent=True) or {}
+    national_id = str(data.get('national_id', '') or '').strip()
+    if not national_id:
+        return jsonify({'error': 'national_id is required'}), 400
+
+    row = Notification.query.filter_by(notification_id=notification_id, patient_national_id=national_id).first()
+    if not row:
+        return jsonify({'error': 'Notification not found'}), 404
+
+    row.seen = True
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to mark seen: {e}'}), 500
+
+    unseen_count = Notification.query.filter_by(patient_national_id=national_id, seen=False).count()
+    return jsonify({'message': 'ok', 'unseen_count': int(unseen_count)}), 200
+
+
+@app.route('/notifications/seen-all', methods=['PUT'])
+def mark_all_notifications_seen():
+    data = request.get_json(silent=True) or {}
+    national_id = str(data.get('national_id', '') or '').strip()
+    if not national_id:
+        return jsonify({'error': 'national_id is required'}), 400
+    try:
+        Notification.query.filter_by(patient_national_id=national_id, seen=False).update(
+            {'seen': True},
+            synchronize_session=False,
+        )
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to mark all seen: {e}'}), 500
+    return jsonify({'message': 'ok', 'unseen_count': 0}), 200
+
+
+# ══════════════════════════════════════════════════════════
 # START SERVER
 # ══════════════════════════════════════════════════════════
 
@@ -1328,6 +1947,7 @@ if __name__ == '__main__':
         ensure_admin_specialist_gender_columns()
         ensure_patient_room_numbers()
         ensure_patient_password_column()
+        ensure_patient_settings_recorded_data_usage_column()
         print("📦 Database tables ready")
         print("\n📍 API listening on http://127.0.0.1:5000 (and http://localhost:5000)\n")
 

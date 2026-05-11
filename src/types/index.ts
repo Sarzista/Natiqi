@@ -30,5 +30,7 @@ export interface AuthContextType {
   login: (email: string, password: string, role?: UserRole) => Promise<void>;
   logout: () => void;
   isAuthenticated: boolean;
+  /** Merge into the signed-in user and persist to device (after profile PUT succeeds). */
+  updateUser: (patch: Partial<User>) => void;
 }
 

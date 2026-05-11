@@ -2,7 +2,7 @@
  * Authentication Context
  * Manages user authentication state
  */
-import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import React, { createContext, useContext, useState, ReactNode, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { User, AuthContextType, UserRole } from '../types';
 import { login as authLogin, logout as authLogout } from '../services/authService';
@@ -51,6 +51,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const updateUser = useCallback((patch: Partial<User>) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      AsyncStorage.setItem('auth:user', JSON.stringify(next)).catch((e) =>
+        console.error('Failed to persist auth user', e),
+      );
+      return next;
+    });
+  }, []);
+
   return (
     <AuthContext.Provider
       value={{
@@ -58,6 +69,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         login,
         logout,
         isAuthenticated: !!user,
+        updateUser,
       }}
     >
       {/* Delay render until hydration finishes to avoid role flicker */}

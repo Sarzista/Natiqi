@@ -30,6 +30,18 @@ function isRealPython(cmd, prefixArgs) {
   return r.status === 0;
 }
 
+function hasOpenpyxl(cmd, prefixArgs) {
+  const absolute = path.isAbsolute(cmd);
+  const probe = 'import sys\nimport openpyxl\nsys.exit(0)\n';
+  const r = spawnSync(cmd, [...prefixArgs, '-c', probe], {
+    cwd: backendDir,
+    stdio: 'ignore',
+    shell: win && !absolute,
+    windowsHide: true,
+  });
+  return r.status === 0;
+}
+
 function pickFromEnv() {
   const v = process.env.PYTHON || process.env.PYTHON3;
   if (!v || !v.trim()) return null;
@@ -117,13 +129,20 @@ if (!chosen) {
       '    • After installing Python: fully quit and restart Cursor/VS Code so npm sees the new PATH.\n\n' +
       '  Then install API deps:\n' +
       '    cd backend\n' +
-      '    pip install flask flask-sqlalchemy flask-cors werkzeug\n\n' +
+      '    pip install flask flask-sqlalchemy flask-cors werkzeug openpyxl\n\n' +
       '  If [api] exits but Expo runs, Create Account will fail until Flask is running on port 5000.\n'
   );
   process.exit(1);
 }
 
 const absoluteCmd = path.isAbsolute(chosen.cmd);
+console.error(`[api] Starting Flask with: ${chosen.cmd} ${chosen.args.join(' ')}`);
+if (!hasOpenpyxl(chosen.cmd, chosen.args[0] === '-3' ? ['-3'] : [])) {
+  console.error(
+    `[api] Warning: openpyxl is not installed in this Python. XLSX export will fail.\n` +
+      `      Install with: ${chosen.cmd} -m pip install openpyxl\n`
+  );
+}
 const child = spawn(chosen.cmd, chosen.args, {
   cwd: backendDir,
   stdio: 'inherit',

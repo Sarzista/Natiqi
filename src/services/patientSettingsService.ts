@@ -8,17 +8,23 @@ export type PatientSettings = {
   notify_bathroom: boolean;
   notify_medicine: boolean;
   min_confidence: number;
-  require_consecutive: number;
-  calibration_enabled: boolean;
   text_size: 'normal' | 'large';
   high_contrast: boolean;
   data_retention_days: number;
+  /** Opt-in: allow anonymized recorded session data to be used to improve the service. */
+  recorded_data_usage_allowed: boolean;
   preferred_device: string;
   updated_at: string;
 };
 
-export async function fetchPatientSettings(national_id: string): Promise<PatientSettings> {
-  const res = await fetch(`${API_BASE}/patient/settings?national_id=${encodeURIComponent(national_id)}`);
+export async function fetchPatientSettings(
+  national_id: string,
+  opts?: { signal?: AbortSignal },
+): Promise<PatientSettings> {
+  const res = await fetch(
+    `${API_BASE}/patient/settings?national_id=${encodeURIComponent(national_id)}`,
+    { signal: opts?.signal },
+  );
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || 'Failed to load settings');
   return data as PatientSettings;
@@ -32,11 +38,10 @@ export async function savePatientSettings(body: {
   notify_bathroom?: boolean;
   notify_medicine?: boolean;
   min_confidence?: number;
-  require_consecutive?: number;
-  calibration_enabled?: boolean;
   text_size?: 'normal' | 'large';
   high_contrast?: boolean;
   data_retention_days?: number;
+  recorded_data_usage_allowed?: boolean;
   preferred_device?: string;
 }): Promise<PatientSettings> {
   const res = await fetch(`${API_BASE}/patient/settings`, {
@@ -63,8 +68,3 @@ export async function changePatientPassword(body: {
   if (!res.ok) throw new Error(data?.error || 'Failed to change password');
   return data as { message: string };
 }
-
-export function patientSessionsExportUrl(patient_national_id: string): string {
-  return `${API_BASE}/patient/sessions/export?patient_national_id=${encodeURIComponent(patient_national_id)}`;
-}
-

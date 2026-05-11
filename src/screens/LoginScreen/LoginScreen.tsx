@@ -2,7 +2,7 @@
  * Login Screen with Glassmorphism Design
  * National ID + Password fields
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   TextInput,
@@ -15,6 +15,7 @@ import {
   Image,
   Linking,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { colors, spacing, typography } from '../../theme';
@@ -33,6 +34,9 @@ const { width, height } = Dimensions.get('window');
 const isSmallScreen = width < 600;
 const PASSWORD_ICON_GUTTER = 48;
 
+/** Persists last-entered credentials (local / browser via AsyncStorage). */
+const LOGIN_SAVED_FIELDS_KEY = '@natiqi_login_saved_fields';
+
 
 type LoginScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Login'>;
 type LoginScreenRouteProp = RouteProp<RootStackParamList, 'Login'>;
@@ -49,9 +53,53 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [focusedField, setFocusedField] = useState<'id' | 'password' | null>(null);
+  const [fieldsRestored, setFieldsRestored] = useState(false);
+  const passwordInputRef = useRef<TextInput>(null);
+  const loginSubmitLockRef = useRef(false);
   const { login } = useAuth();
   const { t, isRTL } = useLanguage();
   const role: UserRole = route.params?.role ?? 'RegisteredUser';
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(LOGIN_SAVED_FIELDS_KEY);
+        if (cancelled) return;
+        if (raw) {
+          const parsed = JSON.parse(raw) as { nationalId?: string; password?: string };
+          if (typeof parsed.nationalId === 'string') {
+            const digits = parsed.nationalId.replace(/\D/g, '').slice(0, 10);
+            if (digits) setEmail(digits);
+          }
+          if (typeof parsed.password === 'string' && parsed.password.length > 0) {
+            setPassword(parsed.password);
+          }
+        }
+      } catch {
+        // ignore corrupt storage
+      } finally {
+        if (!cancelled) setFieldsRestored(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (!fieldsRestored) return;
+      const id = email.trim();
+      const pw = password;
+      if (!id && !pw) return;
+      AsyncStorage.setItem(
+        LOGIN_SAVED_FIELDS_KEY,
+        JSON.stringify({ nationalId: id, password: pw }),
+      ).catch(() => undefined);
+    }, 450);
+    return () => clearTimeout(t);
+  }, [email, password, fieldsRestored]);
 
   const loginSubtitleKey =
     role === 'admin'
@@ -76,19 +124,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
     setEmail(digitsOnly);
   };
 
-  const handleLogin = async () => {
+  const handleLogin = useCallback(async () => {
     if (!email.trim() || !password.trim()) {
       setError(t('login.errorBothFields'));
       return;
     }
-
+    if (loginSubmitLockRef.current) return;
+    loginSubmitLockRef.current = true;
     setLoading(true);
     setError('');
 
     try {
       await login(email, password, role);
-      // After successful login, always navigate to Dashboard
-      // (even if already authenticated from a previous session)
+      await AsyncStorage.setItem(
+        LOGIN_SAVED_FIELDS_KEY,
+        JSON.stringify({ nationalId: email.trim(), password }),
+      ).catch(() => undefined);
       navigation.navigate('Dashboard');
     } catch (err: unknown) {
       const msg =
@@ -97,8 +148,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
       console.error('Login error:', err);
     } finally {
       setLoading(false);
+      loginSubmitLockRef.current = false;
     }
-  };
+  }, [email, password, role, login, navigation, t]);
 
   return (
     <View style={styles.container}>
@@ -156,7 +208,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
                   keyboardType="number-pad"
                   maxLength={10}
                   autoCapitalize="none"
-                  autoComplete="off"
+                  autoComplete={Platform.OS === 'web' ? 'username' : 'off'}
+                  returnKeyType="next"
+                  blurOnSubmit={false}
+                  onSubmitEditing={() => passwordInputRef.current?.focus()}
+                  onKeyPress={(e) => {
+                    if (e.nativeEvent.key === 'Enter') {
+                      passwordInputRef.current?.focus();
+                    }
+                  }}
                   onFocus={() => setFocusedField('id')}
                   onBlur={() => setFocusedField((prev) => (prev === 'id' ? null : prev))}
                 />
@@ -174,6 +234,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
                 </AppText>
                 <View style={styles.passwordContainer}>
                   <TextInput
+                    ref={passwordInputRef}
                     style={[
                       styles.input,
                       inputDirectionStyle,
@@ -189,6 +250,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
                     secureTextEntry={!showPassword}
                     autoCapitalize="none"
                     autoComplete="password"
+                    returnKeyType="go"
+                    onSubmitEditing={() => {
+                      if (!loading) void handleLogin();
+                    }}
+                    onKeyPress={(e) => {
+                      if (e.nativeEvent.key === 'Enter' && !loading) {
+                        void handleLogin();
+                      }
+                    }}
                     onFocus={() => setFocusedField('password')}
                     onBlur={() => setFocusedField((prev) => (prev === 'password' ? null : prev))}
                   />

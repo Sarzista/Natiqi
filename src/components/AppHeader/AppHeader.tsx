@@ -30,6 +30,8 @@ interface AppHeaderProps {
   logoVariant?: 'full' | 'icon' | 'text'; // Logo variant
   rightContent?: ReactNode; // Right side content (notifications, user menu, etc.)
   onLogoPress?: () => void; // Callback when logo is clicked
+  /** Passed to LanguageSwitch. Default false; enable on patient/specialist dashboard only. */
+  showNotifications?: boolean;
 }
 
 export const AppHeader: React.FC<AppHeaderProps> = ({
@@ -39,6 +41,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   logoVariant = 'icon',
   rightContent,
   onLogoPress,
+  showNotifications = false,
 }) => {
   const { t, language } = useLanguage();
   const isArabic = language === 'ar';
@@ -142,7 +145,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
       {/* Right side: Language switch + custom content */}
       <View style={styles.rightSection}>
         <View style={styles.languageSwitchWrapper}>
-          <LanguageSwitch />
+          <LanguageSwitch showNotifications={showNotifications} />
         </View>
         {rightContent}
       </View>

@@ -34,6 +34,7 @@ class Admin(db.Model):
             'name': self.name,
             'email': self.email,
             'role': self.role or 'admin',
+            'phone': self.phone or '',
         }
 
 
@@ -65,6 +66,7 @@ class Specialist(db.Model):
             'name': self.name,
             'email': self.email,
             'role': self.role or 'specialist',
+            'phone': self.phone or '',
         }
 
 # ──────────────────────────────────────────────
@@ -111,7 +113,9 @@ class PatientSettings(db.Model):
 
     # Safety / decoding behavior
     min_confidence = db.Column(db.Numeric(5, 4), nullable=False, default=0.25)
+    # Legacy DB column; no longer exposed in API or UI (bell uses word toggles + min_confidence only).
     require_consecutive = db.Column(db.Integer, nullable=False, default=1)
+    # Legacy DB column; no longer exposed in API or UI.
     calibration_enabled = db.Column(db.Boolean, nullable=False, default=False)
 
     # Accessibility
@@ -120,6 +124,8 @@ class PatientSettings(db.Model):
 
     # Privacy / data
     data_retention_days = db.Column(db.Integer, nullable=False, default=365)
+    # Opt-in: recorded session / EEG data may be used to improve the service (off by default).
+    recorded_data_usage_allowed = db.Column(db.Boolean, nullable=False, default=False)
 
     # Device preferences
     preferred_device = db.Column(db.String(50), nullable=False, default='EPOC X')
@@ -135,11 +141,10 @@ class PatientSettings(db.Model):
             'notify_bathroom': bool(self.notify_bathroom),
             'notify_medicine': bool(self.notify_medicine),
             'min_confidence': float(self.min_confidence),
-            'require_consecutive': int(self.require_consecutive),
-            'calibration_enabled': bool(self.calibration_enabled),
             'text_size': str(self.text_size),
             'high_contrast': bool(self.high_contrast),
             'data_retention_days': int(self.data_retention_days),
+            'recorded_data_usage_allowed': bool(self.recorded_data_usage_allowed),
             'preferred_device': str(self.preferred_device or 'EPOC X'),
             'updated_at': self.updated_at.isoformat() if self.updated_at else '',
         }
@@ -217,6 +222,61 @@ class EEGSession(db.Model):
     # Relationships
     alerts                 = db.relationship('Alert', backref='session', lazy=True)
 
+
+# ──────────────────────────────────────────────
+# EEG Session Event (per decoded word during a session)
+# ──────────────────────────────────────────────
+class EEGSessionEvent(db.Model):
+    __tablename__ = 'eeg_session_event'
+
+    event_id = db.Column(db.Integer, primary_key=True, autoincrement=True, unique=True)
+    session_id = db.Column(db.Integer, db.ForeignKey('eeg_session.session_id'), nullable=False, index=True)
+    event_time = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    detected_word = db.Column(db.String(50), nullable=False)
+    confidence = db.Column(db.Numeric(5, 4), nullable=True)
+
+    session = db.relationship('EEGSession', backref=db.backref('events', lazy=True, cascade='all, delete-orphan'))
+
+
+# ──────────────────────────────────────────────
+# Notification (recipient bell UI)
+# ──────────────────────────────────────────────
+class Notification(db.Model):
+    __tablename__ = 'notification'
+
+    notification_id = db.Column(db.Integer, primary_key=True, autoincrement=True, unique=True)
+    patient_national_id = db.Column(db.String(20), nullable=False, index=True)
+    detected_word = db.Column(db.String(50), nullable=False)
+    confidence = db.Column(db.Numeric(5, 4), nullable=True)
+    event_time = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    seen = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def to_dict(self):
+        c = float(self.confidence) if self.confidence is not None else None
+        return {
+            'notification_id': int(self.notification_id),
+            'patient_national_id': str(self.patient_national_id),
+            'detected_word': str(self.detected_word),
+            'confidence': c,
+            'event_time': self.event_time.isoformat() if self.event_time else '',
+            'seen': bool(self.seen),
+        }
+
+
+# ──────────────────────────────────────────────
+# Notification Event (raw per-tick feed; bell eligibility uses word toggles + min_confidence)
+# ──────────────────────────────────────────────
+class NotificationEvent(db.Model):
+    __tablename__ = 'notification_event'
+
+    event_id = db.Column(db.Integer, primary_key=True, autoincrement=True, unique=True)
+    patient_national_id = db.Column(db.String(20), nullable=False, index=True)
+    detected_word = db.Column(db.String(50), nullable=False)
+    confidence = db.Column(db.Numeric(5, 4), nullable=True)
+    event_time = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 # ──────────────────────────────────────────────
 # Alert
