@@ -1,8 +1,8 @@
-import { API_BASE } from '../config/apiBase';
+import { getApiBase } from '../config/apiBase';
 
 // Fetch all users (admin, specialist, registereduser)
 export const getUsers = async () => {
-  const res = await fetch(`${API_BASE}/admin/users`);
+  const res = await fetch(`${getApiBase()}/admin/users`);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Failed to fetch users');
   return data;
@@ -23,7 +23,7 @@ export type AddUserResponse = { message: string; temp_password: string };
 
 // Add a new user (Admin or Specialist)
 export const addUser = async (user: AddUserPayload): Promise<AddUserResponse> => {
-  const res = await fetch(`${API_BASE}/admin/users`, {
+  const res = await fetch(`${getApiBase()}/admin/users`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(user),
@@ -44,7 +44,7 @@ export const editUser = async (
     performed_by_id:    string;
   }
 ) => {
-  const res = await fetch(`${API_BASE}/admin/users/${nationalId}`, {
+  const res = await fetch(`${getApiBase()}/admin/users/${nationalId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
@@ -62,7 +62,7 @@ export const deleteUser = async (
   performed_by_id:   string,
 ) => {
   const res = await fetch(
-    `${API_BASE}/admin/users/${encodeURIComponent(nationalId)}?role=${encodeURIComponent(role)}`,
+    `${getApiBase()}/admin/users/${encodeURIComponent(nationalId)}?role=${encodeURIComponent(role)}`,
     {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },

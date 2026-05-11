@@ -1,4 +1,4 @@
-import { API_BASE } from '../config/apiBase';
+import { getApiBase } from '../config/apiBase';
 
 export type EegSessionRow = {
   session_id: number;
@@ -27,14 +27,14 @@ export async function fetchSpecialistSessions(params: {
   if (params.specialist_id) qs.set('specialist_id', params.specialist_id);
   if (params.patient_national_id) qs.set('patient_national_id', params.patient_national_id);
   if (params.limit != null) qs.set('limit', String(params.limit));
-  const res = await fetch(`${API_BASE}/specialist/sessions?${qs.toString()}`);
+  const res = await fetch(`${getApiBase()}/specialist/sessions?${qs.toString()}`);
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || 'Failed to load sessions');
   return data as EegSessionRow[];
 }
 
 export async function fetchAdminSessions(limit = 100): Promise<EegSessionRow[]> {
-  const res = await fetch(`${API_BASE}/admin/sessions?limit=${encodeURIComponent(String(limit))}`);
+  const res = await fetch(`${getApiBase()}/admin/sessions?limit=${encodeURIComponent(String(limit))}`);
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || 'Failed to load sessions');
   return data as EegSessionRow[];
@@ -46,7 +46,7 @@ export async function createEegSessionFromWindow(body: {
   window: number[][];
   device?: string;
 }): Promise<{ message: string; session_id: number; prediction: any }> {
-  const res = await fetch(`${API_BASE}/eeg/sessions`, {
+  const res = await fetch(`${getApiBase()}/eeg/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -65,7 +65,7 @@ export async function createLiveDemoSession(body: {
   device?: string;
   events?: Array<{ event_time: string; detected_word: string; confidence: number }>;
 }): Promise<{ message: string; session_id: number }> {
-  const res = await fetch(`${API_BASE}/eeg/live-demo/sessions`, {
+  const res = await fetch(`${getApiBase()}/eeg/live-demo/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -93,17 +93,17 @@ export type LiveDemoSessionReport = {
 };
 
 export async function fetchLiveDemoSessionReport(session_id: number): Promise<LiveDemoSessionReport> {
-  const res = await fetch(`${API_BASE}/eeg/live-demo/sessions/${encodeURIComponent(String(session_id))}/report`);
+  const res = await fetch(`${getApiBase()}/eeg/live-demo/sessions/${encodeURIComponent(String(session_id))}/report`);
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || 'Failed to load report');
   return data as LiveDemoSessionReport;
 }
 
 export function liveDemoSessionReportCsvUrl(session_id: number): string {
-  return `${API_BASE}/eeg/live-demo/sessions/${encodeURIComponent(String(session_id))}/report.csv`;
+  return `${getApiBase()}/eeg/live-demo/sessions/${encodeURIComponent(String(session_id))}/report.csv`;
 }
 
 export function liveDemoSessionReportXlsxUrl(session_id: number): string {
-  return `${API_BASE}/eeg/live-demo/sessions/${encodeURIComponent(String(session_id))}/report.xlsx`;
+  return `${getApiBase()}/eeg/live-demo/sessions/${encodeURIComponent(String(session_id))}/report.xlsx`;
 }
 

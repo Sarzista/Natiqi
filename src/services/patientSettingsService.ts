@@ -1,4 +1,4 @@
-import { API_BASE } from '../config/apiBase';
+import { getApiBase } from '../config/apiBase';
 
 export type PatientSettings = {
   user_national_id: string;
@@ -22,7 +22,7 @@ export async function fetchPatientSettings(
   opts?: { signal?: AbortSignal },
 ): Promise<PatientSettings> {
   const res = await fetch(
-    `${API_BASE}/patient/settings?national_id=${encodeURIComponent(national_id)}`,
+    `${getApiBase()}/patient/settings?national_id=${encodeURIComponent(national_id)}`,
     { signal: opts?.signal },
   );
   const data = await res.json();
@@ -44,7 +44,7 @@ export async function savePatientSettings(body: {
   recorded_data_usage_allowed?: boolean;
   preferred_device?: string;
 }): Promise<PatientSettings> {
-  const res = await fetch(`${API_BASE}/patient/settings`, {
+  const res = await fetch(`${getApiBase()}/patient/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -59,7 +59,7 @@ export async function changePatientPassword(body: {
   current_password: string;
   new_password: string;
 }): Promise<{ message: string }> {
-  const res = await fetch(`${API_BASE}/patient/change-password`, {
+  const res = await fetch(`${getApiBase()}/patient/change-password`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

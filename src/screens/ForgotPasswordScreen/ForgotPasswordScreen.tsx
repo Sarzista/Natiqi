@@ -25,7 +25,7 @@ import { colors, spacing, typography, gradientTextBgShiftKeyframes } from '../..
 import { RootStackParamList } from '../../types/navigation';
 import { UserRole } from '../../types';
 import { useLanguage } from '../../context/LanguageContext';
-import { API_BASE } from '../../config/apiBase';
+import { getApiBase } from '../../config/apiBase';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 600;
@@ -71,7 +71,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({ navi
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/auth/forgot-password`, {
+      const response = await fetch(`${getApiBase()}/auth/forgot-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ national_id: nationalId.trim(), role }),

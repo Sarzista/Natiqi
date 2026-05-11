@@ -1,4 +1,4 @@
-import { API_BASE } from '../config/apiBase';
+import { getApiBase } from '../config/apiBase';
 
 export type EegPredictWindowResponse = {
   predicted_id: number;
@@ -9,7 +9,7 @@ export type EegPredictWindowResponse = {
 };
 
 export async function predictEegWindow(window14x128: number[][]): Promise<EegPredictWindowResponse> {
-  const res = await fetch(`${API_BASE}/ml/predict-window`, {
+  const res = await fetch(`${getApiBase()}/ml/predict-window`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ window: window14x128 }),
@@ -20,7 +20,7 @@ export async function predictEegWindow(window14x128: number[][]): Promise<EegPre
 }
 
 export async function predictLiveDemo(subject: string = 'aya'): Promise<EegPredictWindowResponse> {
-  const res = await fetch(`${API_BASE}/ml/live-demo/predict`, {
+  const res = await fetch(`${getApiBase()}/ml/live-demo/predict`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ subject }),

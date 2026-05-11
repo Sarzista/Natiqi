@@ -2,7 +2,7 @@
  * Auth Service - Connects to Flask Backend
  */
 import { User, UserRole } from '../types';
-import { API_BASE } from '../config/apiBase';
+import { getApiBase } from '../config/apiBase';
 
 function rethrowIfUnreachable(err: unknown): never {
   const msg = err instanceof Error ? err.message : String(err);
@@ -11,7 +11,7 @@ function rethrowIfUnreachable(err: unknown): never {
     /failed to fetch|network request failed|load failed/i.test(msg)
   ) {
     throw new Error(
-      `Cannot reach the API (${API_BASE}). Start the Flask backend: open a terminal, cd into the backend folder, run python app.py (on Windows try py -3 app.py), and keep that window open while you use the app.`
+      `Cannot reach the API (${getApiBase()}). Start the Flask backend: open a terminal, cd into the backend folder, run python app.py (on Windows try py -3 app.py), and keep that window open while you use the app.`
     );
   }
   throw err instanceof Error ? err : new Error(msg);
@@ -36,7 +36,7 @@ export const login = async (
   console.log('📤 Sending:', { national_id: email, password, role: backendRole });
 
   try {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    const res = await fetch(`${getApiBase()}/auth/login`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -89,7 +89,7 @@ export const register = async (
   console.log('🔌 Sending registration to Flask...');
 
   try {
-    const res = await fetch(`${API_BASE}/auth/register`, {
+    const res = await fetch(`${getApiBase()}/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -122,7 +122,7 @@ export const verifyAccountCode = async (
   code: string
 ): Promise<void> => {
   try {
-    const res = await fetch(`${API_BASE}/auth/verify`, {
+    const res = await fetch(`${getApiBase()}/auth/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ national_id: nationalId, code }),
@@ -140,7 +140,7 @@ export const resendVerificationCode = async (
   nationalId: string
 ): Promise<RegisterResult> => {
   try {
-    const res = await fetch(`${API_BASE}/auth/resend-verification`, {
+    const res = await fetch(`${getApiBase()}/auth/resend-verification`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ national_id: nationalId }),

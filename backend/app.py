@@ -19,14 +19,21 @@ import secrets
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-# Avoid Unicode issues on some Windows consoles
+# Windows consoles often use cp1252; set UTF-8 before any prints that may use non-ASCII
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 print(f'Python executable: {sys.executable}')
 
 # ML inference (EEG 5-word SVM)
 try:
     from ml.eeg_svm_5word import ModelNotReadyError, predict_window
 except Exception as e:
-    print(f'⚠️ ML import disabled: {e}')
+    print(f'[WARN] ML import disabled: {e}')
     ModelNotReadyError = RuntimeError  # type: ignore
     predict_window = None  # type: ignore
 
@@ -34,17 +41,9 @@ except Exception as e:
 try:
     from ml.eeg_rf_4word_demo import ModelNotReadyError as LiveDemoModelNotReadyError, predict_live_demo
 except Exception as e:
-    print(f'⚠️ Live-demo ML import disabled: {e}')
+    print(f'[WARN] Live-demo ML import disabled: {e}')
     LiveDemoModelNotReadyError = RuntimeError  # type: ignore
     predict_live_demo = None  # type: ignore
-
-# Windows consoles often use cp1252; avoid UnicodeEncodeError on log lines with emoji
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
 
 # ══════════════════════════════════════════════════════════
 # APP SETUP
@@ -103,6 +102,26 @@ def ensure_admin_specialist_gender_columns():
         if 'gender' not in cols:
             with db.engine.begin() as conn:
                 conn.execute(text(f'ALTER TABLE {table} ADD COLUMN gender VARCHAR(10)'))
+
+
+def ensure_admin_specialist_verification_columns():
+    """Add verification columns to admin/specialist when upgrading an older SQLite DB."""
+    for table in ('admin', 'specialist'):
+        try:
+            inspector = inspect(db.engine)
+            cols = {c['name'] for c in inspector.get_columns(table)}
+        except Exception:
+            continue
+        alters: list[str] = []
+        if 'verification_code' not in cols:
+            alters.append(f'ALTER TABLE {table} ADD COLUMN verification_code VARCHAR(10)')
+        if 'verification_expires' not in cols:
+            alters.append(f'ALTER TABLE {table} ADD COLUMN verification_expires DATETIME')
+        if not alters:
+            continue
+        with db.engine.begin() as conn:
+            for stmt in alters:
+                conn.execute(text(stmt))
 
 
 def ensure_patient_room_numbers():
@@ -189,6 +208,168 @@ def ensure_patient_settings_recorded_data_usage_column():
                     'BOOLEAN NOT NULL DEFAULT 0'
                 )
             )
+
+
+def ensure_specialist_3030303030_demo_patient_and_sessions():
+    """
+    Ensure specialist Omar (3030303030) has patient 1616161616 (password 123) and recent EEG sessions
+    so the specialist dashboard Patients tab and Recent Sessions list populate after upgrades.
+    (Patient and RegisteredUser are separate tables; the same national ID may exist in both for demo.)
+    """
+    OMAR_NID = '3030303030'
+    PATIENT_NID_INT = 1616161616
+    PATIENT_NID_STR = str(PATIENT_NID_INT)
+
+    try:
+        spec = Specialist.query.filter(
+            or_(Specialist.national_id == OMAR_NID, Specialist.national_id == int(OMAR_NID))
+        ).first()
+        if not spec:
+            return
+
+        spec_key = str(spec.national_id)
+
+        # Keep Omar's main seed cohort assigned to him (ids may be stored as str or int in SQLite)
+        for nid in (6060606060, 7070707070, 9292929292):
+            p = Patient.query.filter(
+                or_(Patient.national_id == str(nid), Patient.national_id == nid)
+            ).first()
+            if p:
+                p.specialist_national_id = spec_key
+
+        patient = Patient.query.filter(
+            or_(Patient.national_id == PATIENT_NID_STR, Patient.national_id == PATIENT_NID_INT)
+        ).first()
+
+        if not patient:
+            patient = Patient(
+                national_id=PATIENT_NID_INT,
+                name='Ayla Al-Naimi',
+                role='patient',
+                password=generate_password_hash('123'),
+                date_of_birth=date(2000, 1, 16),
+                gender='Female',
+                room_number='1616',
+                device='EPOC X',
+                status='Active',
+                specialist_national_id=spec_key,
+            )
+            db.session.add(patient)
+            db.session.flush()
+        else:
+            patient.specialist_national_id = spec_key
+            patient.password = generate_password_hash('123')
+            if not (patient.room_number or '').strip():
+                patient.room_number = '1616'
+
+        model = Model.query.order_by(Model.model_id.asc()).first()
+        if not model:
+            db.session.commit()
+            print('⚠️ ensure_specialist_3030303030_demo_patient: no Model row; skipped EEG sessions')
+            return
+
+        now = datetime.now()
+        pnid = patient.national_id
+        existing = EEGSession.query.filter(
+            EEGSession.specialist_national_id == spec_key,
+            or_(EEGSession.patient_national_id == pnid, EEGSession.patient_national_id == str(pnid)),
+        ).count()
+
+        if existing < 1:
+            s1 = EEGSession(
+                patient_national_id=pnid,
+                specialist_national_id=spec_key,
+                model_id=model.model_id,
+                start_time=now - timedelta(hours=2),
+                end_time=now - timedelta(hours=1, minutes=30),
+                detected_word='Thirst',
+                confidence_level=0.8900,
+                device='EPOC X',
+                channels=14,
+                session_status='Ended',
+            )
+            s2 = EEGSession(
+                patient_national_id=pnid,
+                specialist_national_id=spec_key,
+                model_id=model.model_id,
+                start_time=now - timedelta(minutes=50),
+                end_time=now - timedelta(minutes=20),
+                detected_word='Medicine',
+                confidence_level=0.8700,
+                device='EPOC X',
+                channels=14,
+                session_status='Ended',
+            )
+            db.session.add_all([s1, s2])
+            db.session.flush()
+            db.session.add_all(
+                [
+                    EEGSessionEvent(session_id=s1.session_id, event_time=now - timedelta(hours=1, minutes=55), detected_word='Thirst', confidence=0.88),
+                    EEGSessionEvent(session_id=s1.session_id, event_time=now - timedelta(hours=1, minutes=50), detected_word='Thirst', confidence=0.90),
+                    EEGSessionEvent(session_id=s1.session_id, event_time=now - timedelta(hours=1, minutes=45), detected_word='Hunger', confidence=0.72),
+                    EEGSessionEvent(session_id=s2.session_id, event_time=now - timedelta(minutes=45), detected_word='Medicine', confidence=0.87),
+                    EEGSessionEvent(session_id=s2.session_id, event_time=now - timedelta(minutes=40), detected_word='Medicine', confidence=0.86),
+                ]
+            )
+
+        db.session.commit()
+        print('✅ ensure_specialist_3030303030_demo_patient: patient 1616161616 + sessions OK')
+    except Exception as e:
+        db.session.rollback()
+        print(f'⚠️ ensure_specialist_3030303030_demo_patient: {e}')
+
+
+def ensure_demo_patient_notifications_for_specialist():
+    """Seed in-app notifications for patients assigned to Omar (3030303030) for demo dashboards and bell."""
+    OMAR = '3030303030'
+    try:
+        spec = Specialist.query.filter(
+            or_(Specialist.national_id == OMAR, Specialist.national_id == int(OMAR))
+        ).first()
+        if not spec:
+            return
+        spec_key = str(spec.national_id)
+        patients = Patient.query.filter(
+            or_(Patient.specialist_national_id == spec_key, Patient.specialist_national_id == int(spec_key))
+        ).all()
+        if not patients:
+            return
+        now = datetime.now()
+        demos = [
+            ('جوع', 0.86, False),
+            ('عطش', 0.88, False),
+            ('دواء', 0.84, True),
+            ('حمام', 0.81, False),
+        ]
+        added = 0
+        for p in patients:
+            pid = str(p.national_id)
+            cnt = Notification.query.filter(
+                or_(Notification.patient_national_id == pid, Notification.patient_national_id == p.national_id)
+            ).count()
+            if cnt >= 4:
+                continue
+            need = 4 - int(cnt)
+            for i in range(need):
+                word, conf, seen = demos[i % len(demos)]
+                db.session.add(
+                    Notification(
+                        patient_national_id=pid,
+                        detected_word=word,
+                        confidence=Decimal(str(conf)),
+                        event_time=now - timedelta(minutes=45 + i * 11 + (hash(pid) % 7)),
+                        seen=seen,
+                    )
+                )
+                added += 1
+        if added:
+            db.session.commit()
+            print(f'✅ ensure_demo_patient_notifications: added {added} notification row(s)')
+        else:
+            db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f'⚠️ ensure_demo_patient_notifications: {e}')
 
 
 def generate_six_digit_code() -> str:
@@ -671,15 +852,39 @@ def get_current_model_info():
             'model_name': '',
             'model_version': '',
             'training_date': '',
+            'model_accuracy': None,
+            'model_status': '',
         }), 200
     td = m.training_date
     date_str = td.date().isoformat() if td else ''
+    acc = float(m.model_accuracy) if m.model_accuracy is not None else None
     return jsonify({
         'model_id': m.model_id,
         'model_name': m.model_name or '',
         'model_version': m.model_version or '',
         'training_date': date_str,
+        'model_accuracy': acc,
+        'model_status': str(m.model_status or ''),
     }), 200
+
+
+@app.route('/admin/models', methods=['GET'])
+def admin_list_models():
+    """All decoder model rows (for admin Models performance chart)."""
+    rows = Model.query.order_by(Model.training_date.asc(), Model.model_id.asc()).all()
+    out = []
+    for m in rows:
+        td = m.training_date
+        date_str = td.date().isoformat() if td else ''
+        out.append({
+            'model_id': m.model_id,
+            'model_name': m.model_name or '',
+            'model_version': m.model_version or '',
+            'model_accuracy': float(m.model_accuracy) if m.model_accuracy is not None else 0.0,
+            'model_status': str(m.model_status or ''),
+            'training_date': date_str,
+        })
+    return jsonify({'models': out}), 200
 
 
 @app.route('/admin/current-model', methods=['PUT'])
@@ -1934,6 +2139,109 @@ def mark_all_notifications_seen():
     return jsonify({'message': 'ok', 'unseen_count': 0}), 200
 
 
+@app.route('/specialist/patient-notifications', methods=['GET'])
+def specialist_patient_notifications():
+    """Recent notifications for all patients assigned to this specialist (clinical needs / bell aggregate)."""
+    specialist_id = str(request.args.get('specialist_id', '') or '').strip()
+    if not specialist_id:
+        return jsonify({'error': 'specialist_id is required'}), 400
+    limit = request.args.get('limit', default=30, type=int)
+    limit = max(1, min(int(limit), 100))
+
+    try:
+        sid_int = int(specialist_id)
+    except Exception:
+        sid_int = None
+
+    spec = Specialist.query.filter(
+        or_(Specialist.national_id == specialist_id, Specialist.national_id == sid_int)
+    ).first()
+    if not spec:
+        return jsonify({'error': 'Specialist not found'}), 404
+    spec_key = str(spec.national_id)
+
+    pat_conds = [Patient.specialist_national_id == spec_key]
+    if sid_int is not None:
+        pat_conds.append(Patient.specialist_national_id == sid_int)
+    patients = Patient.query.filter(or_(*pat_conds)).all()
+    if not patients:
+        return jsonify({'items': [], 'unseen_count': 0}), 200
+
+    name_by: dict[str, str] = {}
+    pid_keys: list[str] = []
+    for p in patients:
+        s = str(p.national_id)
+        name_by[s] = p.name or 'Patient'
+        pid_keys.append(s)
+
+    notif_conds = []
+    for k in pid_keys:
+        notif_conds.append(Notification.patient_national_id == k)
+        try:
+            notif_conds.append(Notification.patient_national_id == int(k))
+        except Exception:
+            pass
+
+    rows = (
+        Notification.query.filter(or_(*notif_conds))
+        .order_by(Notification.event_time.desc(), Notification.notification_id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    unseen_total = (
+        Notification.query.filter(or_(*notif_conds), Notification.seen.is_(False)).count()
+        if notif_conds
+        else 0
+    )
+
+    out = []
+    for r in rows:
+        pk = str(r.patient_national_id)
+        d = r.to_dict()
+        pname = name_by.get(pk)
+        if not pname and pk.isdigit():
+            pname = name_by.get(str(int(pk)))
+        d['patient_name'] = pname or 'Patient'
+        out.append(d)
+
+    return jsonify({'items': out, 'unseen_count': int(unseen_total)}), 200
+
+
+@app.route('/specialist/patient-notifications/seen-all', methods=['PUT'])
+def specialist_mark_all_patient_notifications_seen():
+    data = request.get_json(silent=True) or {}
+    specialist_id = str(data.get('specialist_id', '') or '').strip()
+    if not specialist_id:
+        return jsonify({'error': 'specialist_id is required'}), 400
+    try:
+        sid_int = int(specialist_id)
+    except Exception:
+        sid_int = None
+    spec = Specialist.query.filter(
+        or_(Specialist.national_id == specialist_id, Specialist.national_id == sid_int)
+    ).first()
+    if not spec:
+        return jsonify({'error': 'Specialist not found'}), 404
+    spec_key = str(spec.national_id)
+    pat_conds = [Patient.specialist_national_id == spec_key]
+    if sid_int is not None:
+        pat_conds.append(Patient.specialist_national_id == sid_int)
+    patients = Patient.query.filter(or_(*pat_conds)).all()
+    try:
+        for p in patients:
+            pid = p.national_id
+            Notification.query.filter(
+                or_(Notification.patient_national_id == str(pid), Notification.patient_national_id == pid),
+                Notification.seen.is_(False),
+            ).update({'seen': True}, synchronize_session=False)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to mark all seen: {e}'}), 500
+    return jsonify({'message': 'ok', 'unseen_count': 0}), 200
+
+
 # ══════════════════════════════════════════════════════════
 # START SERVER
 # ══════════════════════════════════════════════════════════
@@ -1945,10 +2253,13 @@ if __name__ == '__main__':
         db.create_all()  #create the database
         ensure_registered_user_verification_columns()
         ensure_admin_specialist_gender_columns()
+        ensure_admin_specialist_verification_columns()
         ensure_patient_room_numbers()
         ensure_patient_password_column()
         ensure_patient_settings_recorded_data_usage_column()
-        print("📦 Database tables ready")
-        print("\n📍 API listening on http://127.0.0.1:5000 (and http://localhost:5000)\n")
+        ensure_specialist_3030303030_demo_patient_and_sessions()
+        ensure_demo_patient_notifications_for_specialist()
+        print("[OK] Database tables ready")
+        print("\nAPI listening on http://127.0.0.1:5000 (and http://localhost:5000)\n")
 
     app.run(debug=True, host='0.0.0.0', port=5000)

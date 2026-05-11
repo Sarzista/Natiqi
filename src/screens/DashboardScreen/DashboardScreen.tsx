@@ -4,7 +4,7 @@
  * - Clinician/Admin: patient overview list
  * - Patient: personal EEG communication dashboard
  */
-import React, { useCallback, useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -37,7 +37,7 @@ import AnimatedRe, {
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import Svg, { Path, Polyline, Circle } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
 import { AppHeader } from '../../components/AppHeader';
 import { PatientCard } from '../../components/PatientCard';
 import { AppText } from '../../components/AppText';
@@ -54,10 +54,19 @@ import { RootStackParamList } from '../../types/navigation';
 import { colors, spacing, typography } from '../../theme';
 import { getPatients, addPatient, deletePatient } from '../../services/patientService';
 import { getUsers, addUser, deleteUser } from '../../services/userService';
-import { fetchCurrentModel, saveCurrentModel } from '../../services/modelAdminService';
+import {
+  fetchCurrentModel,
+  fetchAdminModels,
+  saveCurrentModel,
+  type AdminModelRow,
+} from '../../services/modelAdminService';
 import { predictEegWindow, predictLiveDemo, type EegPredictWindowResponse } from '../../services/eegModelService';
 import { fetchModelArtifactStatus, type ModelArtifactStatus } from '../../services/modelArtifactService';
-import { createNotificationEvent } from '../../services/notificationService';
+import {
+  createNotificationEvent,
+  fetchSpecialistPatientNotifications,
+  type SpecialistPatientNotificationRow,
+} from '../../services/notificationService';
 import {
   fetchSpecialistSessions,
   createEegSessionFromWindow,
@@ -74,7 +83,7 @@ import {
   changePatientPassword,
   type PatientSettings,
 } from '../../services/patientSettingsService';
-import { API_BASE } from '../../config/apiBase';
+import { getApiBase } from '../../config/apiBase';
 import { Audio } from 'expo-av';
 
 /** Mirrors backend `_notification_word_enabled` (Alerts & safety toggles). */
@@ -297,6 +306,70 @@ function sessionListSavedDateTime(s: EegSessionRow): string {
   }
 }
 
+/** Demo rows for specialist home KPIs / Recent Sessions when the API returns no sessions yet. */
+const SPECIALIST_DEMO_HOME_SESSIONS: EegSessionRow[] = [
+  {
+    session_id: 91001,
+    patient_national_id: '1616161616',
+    specialist_national_id: '3030303030',
+    model_id: 1,
+    start_time: '2026-05-10T08:15:00',
+    end_time: '2026-05-10T08:45:00',
+    detected_word: 'عطش',
+    confidence_level: 0.88,
+    top_predicted_word: 'عطش',
+    top_predicted_word_avg_confidence: 0.87,
+    device: 'EPOC X',
+    channels: 14,
+    session_status: 'Ended',
+  },
+  {
+    session_id: 91002,
+    patient_national_id: '7070707070',
+    specialist_national_id: '3030303030',
+    model_id: 1,
+    start_time: '2026-05-10T10:20:00',
+    end_time: '2026-05-10T10:55:00',
+    detected_word: 'جوع',
+    confidence_level: 0.84,
+    top_predicted_word: 'جوع',
+    top_predicted_word_avg_confidence: 0.85,
+    device: 'EPOC X',
+    channels: 14,
+    session_status: 'Ended',
+  },
+  {
+    session_id: 91003,
+    patient_national_id: '6060606060',
+    specialist_national_id: '3030303030',
+    model_id: 1,
+    start_time: '2026-05-11T07:05:00',
+    end_time: '2026-05-11T07:40:00',
+    detected_word: 'حمام',
+    confidence_level: 0.82,
+    top_predicted_word: 'حمام',
+    top_predicted_word_avg_confidence: 0.83,
+    device: 'EPOC X',
+    channels: 14,
+    session_status: 'Ended',
+  },
+  {
+    session_id: 91004,
+    patient_national_id: '9292929292',
+    specialist_national_id: '3030303030',
+    model_id: 1,
+    start_time: '2026-05-11T09:30:00',
+    end_time: '2026-05-11T10:00:00',
+    detected_word: 'دواء',
+    confidence_level: 0.86,
+    top_predicted_word: 'دواء',
+    top_predicted_word_avg_confidence: 0.86,
+    device: 'EPOC X',
+    channels: 14,
+    session_status: 'Ended',
+  },
+];
+
 /** Only `0`, `0.`, `0.xx` (up to 2 decimals after `.`), or exactly `1`. */
 function sanitizeMinConfidenceDraft(raw: string): string {
   let t = raw.replace(/[^0-9.,]/g, '').replace(/,/g, '.');
@@ -484,6 +557,83 @@ function SettingsPageGlassCard({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Matches `GET /admin/system-logs` rows; used in __DEV__ when the DB has no logs yet. */
+type AdminSystemLogRow = {
+  id: string | number;
+  userName: string;
+  role: string;
+  nationalId: string;
+  event: string;
+  timestamp: string;
+};
+
+const MOCK_ADMIN_SYSTEM_LOGS: AdminSystemLogRow[] = [
+  {
+    id: 'L-1042',
+    userName: 'Dr. Nora Al-Faisal',
+    role: 'Admin',
+    nationalId: '1000123456',
+    event: 'Approved specialist access request (user ID 128)',
+    timestamp: '2026-05-11 09:14:22',
+  },
+  {
+    id: 'L-1041',
+    userName: 'Khalid Al-Mutairi',
+    role: 'Specialist',
+    nationalId: '2000456789',
+    event: 'Opened live EEG session #4821 for patient P-0092',
+    timestamp: '2026-05-11 08:52:03',
+  },
+  {
+    id: 'L-1040',
+    userName: 'System',
+    role: 'Admin',
+    nationalId: '—',
+    event: 'Production model metadata updated (CNN-BiLSTM v2.3.1)',
+    timestamp: '2026-05-11 08:31:17',
+  },
+  {
+    id: 'L-1039',
+    userName: 'Layla Al-Harbi',
+    role: 'Admin',
+    nationalId: '1000789012',
+    event: 'Reset MFA for user sara.m@example.com',
+    timestamp: '2026-05-10 16:08:44',
+  },
+  {
+    id: 'L-1038',
+    userName: 'Omar Al-Qahtani',
+    role: 'Specialist',
+    nationalId: '2000334455',
+    event: 'Exported session report CSV (session #4798)',
+    timestamp: '2026-05-10 14:22:51',
+  },
+  {
+    id: 'L-1037',
+    userName: 'Dr. Nora Al-Faisal',
+    role: 'Admin',
+    nationalId: '1000123456',
+    event: 'Deactivated account for national ID 3000111222',
+    timestamp: '2026-05-10 11:05:09',
+  },
+  {
+    id: 'L-1036',
+    userName: 'Fatima Al-Zahrani',
+    role: 'Specialist',
+    nationalId: '2000567890',
+    event: 'Adjusted patient notification thresholds (min confidence 65%)',
+    timestamp: '2026-05-09 19:41:33',
+  },
+  {
+    id: 'L-1035',
+    userName: 'System',
+    role: 'Admin',
+    nationalId: '—',
+    event: 'Scheduled backup completed successfully',
+    timestamp: '2026-05-09 02:00:01',
+  },
+];
+
 export const DashboardScreen: React.FC = () => {
   const navigation = useNavigation<DashboardScreenNavigationProp>();
   const { user, updateUser } = useAuth();
@@ -493,7 +643,6 @@ export const DashboardScreen: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarAnim = useRef(new Animated.Value(0)).current;
-  const [chartWidth, setChartWidth] = useState(0);
   const [userSearch, setUserSearch] = useState('');
   const [showAddUserForm, setShowAddUserForm] = useState(false);
   const [newUserName, setNewUserName] = useState('');
@@ -513,10 +662,10 @@ export const DashboardScreen: React.FC = () => {
   const [deletePatientMessage, setDeletePatientMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
   const [modelFormMessage, setModelFormMessage] = useState<{
-    
     type: 'error' | 'success';
     text: string;
   } | null>(null);
+  const [adminModelsList, setAdminModelsList] = useState<AdminModelRow[]>([]);
   const [adminSettings, setAdminSettings] = useState<AdminSettingsState>(INITIAL_ADMIN_SETTINGS);
   const [specialistMedicalSettings, setSpecialistMedicalSettings] =
     useState<SpecialistMedicalSettingsState>(INITIAL_SPECIALIST_MEDICAL_SETTINGS);
@@ -567,6 +716,7 @@ export const DashboardScreen: React.FC = () => {
   const [specSessions, setSpecSessions] = useState<EegSessionRow[]>([]);
   const [specSessionsLoading, setSpecSessionsLoading] = useState(false);
   const [specSessionsError, setSpecSessionsError] = useState<string | null>(null);
+  const [specPatientNotifs, setSpecPatientNotifs] = useState<SpecialistPatientNotificationRow[]>([]);
   const [createSessionLoading, setCreateSessionLoading] = useState(false);
 
   // ── Patient settings (persisted) ──
@@ -762,7 +912,7 @@ export const DashboardScreen: React.FC = () => {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/admin/users/${editingUser.nationalId}`, {
+      const res = await fetch(`${getApiBase()}/admin/users/${editingUser.nationalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -805,7 +955,7 @@ export const DashboardScreen: React.FC = () => {
       }
 
       try {
-        const res = await fetch(`${API_BASE}/profile/update`, {
+        const res = await fetch(`${getApiBase()}/profile/update`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -959,7 +1109,7 @@ export const DashboardScreen: React.FC = () => {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/specialist/patients/${editingPatient.nationalId}`, {
+      const res = await fetch(`${getApiBase()}/specialist/patients/${editingPatient.nationalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1300,11 +1450,23 @@ const handleAddPatient = async () => {
     if (!isAdmin || activeSidebarItem !== 'admin-models') return;
     setModelFormLoading(true);
     setModelFormMessage(null);
-    fetchCurrentModel()
-      .then((d) => {
+    Promise.all([fetchCurrentModel(), fetchAdminModels()])
+      .then(([d, { models }]) => {
         setModelFormName(d.model_name || '');
         setModelFormVersion(d.model_version || '');
         setModelFormTrainingDate(d.training_date || '');
+        setAdminModelsList(models);
+        const pct =
+          d.model_accuracy != null && Number.isFinite(Number(d.model_accuracy))
+            ? Math.round(Number(d.model_accuracy) * 10000) / 100
+            : null;
+        setAdminStatsData((prev) => ({
+          ...prev,
+          modelAccuracyPct: pct,
+          modelStatus: d.model_status || '',
+          modelName: d.model_name || '',
+          modelVersion: d.model_version || '',
+        }));
       })
       .catch((e: Error) =>
         setModelFormMessage({ type: 'error', text: e.message || 'Could not load model info' }),
@@ -1359,33 +1521,40 @@ const handleAddPatient = async () => {
   }, [isAdmin, activeSidebarItem]);
 
   useEffect(() => {
-    if (role === 'specialist' && activeSidebarItem === 'spec-patients') {
-      setPatientsLoading(true);
-      getPatients(user?.id)
-        .then(setSpecPatients)
-        .catch(console.error)
-        .finally(() => setPatientsLoading(false));
-    }
-  }, [role, activeSidebarItem]);
+    if (role !== 'specialist' || !user?.id) return;
+    setPatientsLoading(true);
+    getPatients(user.id)
+      .then(setSpecPatients)
+      .catch(console.error)
+      .finally(() => setPatientsLoading(false));
+  }, [role, user?.id]);
 
   useEffect(() => {
-    if (role !== 'specialist' || activeSidebarItem !== 'spec-sessions') return;
+    if (role !== 'specialist' || !user?.id) return;
     setSpecSessionsLoading(true);
     setSpecSessionsError(null);
-    fetchSpecialistSessions({ specialist_id: user?.id ?? '', limit: 100 })
+    fetchSpecialistSessions({ specialist_id: user.id, limit: 100 })
       .then(setSpecSessions)
       .catch((e: unknown) => setSpecSessionsError(e instanceof Error ? e.message : 'Failed to load sessions'))
       .finally(() => setSpecSessionsLoading(false));
-  }, [role, activeSidebarItem, user?.id]);
+  }, [role, user?.id]);
 
   useEffect(() => {
-    if (isAdmin && activeSidebarItem === 'admin-logs') {
-      fetch(`${API_BASE}/admin/system-logs`)
-        .then(res => res.json())
-        .then(setSystemLogs)
-        .catch(console.error);
-    }
-  }, [isAdmin, activeSidebarItem]);
+    if (role !== 'specialist' || !user?.id) return;
+    fetchSpecialistPatientNotifications({ specialist_id: user.id, limit: 20 })
+      .then((r) => setSpecPatientNotifs(r.items || []))
+      .catch(() => setSpecPatientNotifs([]));
+  }, [role, user?.id]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    fetch(`${getApiBase()}/admin/system-logs`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) setSystemLogs(data as AdminSystemLogRow[]);
+      })
+      .catch(console.error);
+  }, [isAdmin]);
 
   const handleSaveModelInfo = async () => {
     const name = modelFormName.trim();
@@ -1410,6 +1579,22 @@ const handleAddPatient = async () => {
         performed_by_name: user?.name ?? 'Admin',
       });
       setModelFormMessage({ type: 'success', text: 'Model information saved.' });
+      const [d, { models }] = await Promise.all([fetchCurrentModel(), fetchAdminModels()]);
+      setModelFormName(d.model_name || '');
+      setModelFormVersion(d.model_version || '');
+      setModelFormTrainingDate(d.training_date || '');
+      setAdminModelsList(models);
+      const pct =
+        d.model_accuracy != null && Number.isFinite(Number(d.model_accuracy))
+          ? Math.round(Number(d.model_accuracy) * 10000) / 100
+          : null;
+      setAdminStatsData((prev) => ({
+        ...prev,
+        modelAccuracyPct: pct,
+        modelStatus: d.model_status || '',
+        modelName: d.model_name || '',
+        modelVersion: d.model_version || '',
+      }));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Save failed';
       setModelFormMessage({ type: 'error', text: msg });
@@ -1418,17 +1603,35 @@ const handleAddPatient = async () => {
     }
   };
 
-  const [adminStatsData, setAdminStatsData] = useState({ users: 0, sessions: 0 });
+  const [adminStatsData, setAdminStatsData] = useState({
+    users: 0,
+    sessions: 0,
+    modelAccuracyPct: null as number | null,
+    modelStatus: '',
+    modelName: '',
+    modelVersion: '',
+  });
 
   useEffect(() => {
     if (!isAdmin) return;
     Promise.all([
-      fetch(`${API_BASE}/admin/users`).then(r => r.json()),
-      fetch(`${API_BASE}/admin/sessions?limit=500`).then(r => r.json()),
-    ]).then(([users, sessions]) => {
+      fetch(`${getApiBase()}/admin/users`).then(r => r.json()),
+      fetch(`${getApiBase()}/admin/sessions?limit=500`).then(r => r.json()),
+      fetchCurrentModel().catch(() => null),
+      fetchAdminModels().catch(() => ({ models: [] as AdminModelRow[] })),
+    ]).then(([users, sessions, cur, { models }]) => {
+      const pct =
+        cur && cur.model_accuracy != null && Number.isFinite(Number(cur.model_accuracy))
+          ? Math.round(Number(cur.model_accuracy) * 10000) / 100
+          : null;
+      setAdminModelsList(Array.isArray(models) ? models : []);
       setAdminStatsData({
         users: Array.isArray(users) ? users.length : 0,
         sessions: Array.isArray(sessions) ? sessions.length : 0,
+        modelAccuracyPct: pct,
+        modelStatus: (cur && cur.model_status) || '',
+        modelName: (cur && cur.model_name) || '',
+        modelVersion: (cur && cur.model_version) || '',
       });
     }).catch(console.error);
   }, [isAdmin]);
@@ -1453,10 +1656,10 @@ const handleAddPatient = async () => {
     {
       key: 'accuracy',
       label: 'Model Accuracy',
-      value: '—',
+      value: adminStatsData.modelAccuracyPct != null ? `${adminStatsData.modelAccuracyPct}%` : '—',
       icon: 'checkmark-circle-outline',
       tint: colors.logo.oceanGreen,
-      note: 'Model Pending',
+      note: adminStatsData.modelStatus || 'Production model',
     },
     {
       key: 'alerts',
@@ -1468,29 +1671,55 @@ const handleAddPatient = async () => {
     },
   ];
 
-  const modelSummary = [
-    {
-      key: 'train-acc',
-      label: 'Training Accuracy',
-      value: '95.2%',
-      sub: '+3.1% from last',
-      icon: 'trending-up-outline' as const,
+  const modelSummary = useMemo(
+    () => {
+      const pct = adminStatsData.modelAccuracyPct;
+      const trainVal = pct != null ? `${pct}%` : '—';
+      let sub = 'From active production model (SQLite)';
+      if (adminModelsList.length >= 2) {
+        const a = adminModelsList[adminModelsList.length - 2].model_accuracy;
+        const b = adminModelsList[adminModelsList.length - 1].model_accuracy;
+        const aPct = a <= 1 ? a * 100 : a;
+        const bPct = b <= 1 ? b * 100 : b;
+        const da = bPct - aPct;
+        sub = `${da >= 0 ? '+' : ''}${da.toFixed(1)}% vs previous model row`;
+      }
+      return [
+        {
+          key: 'train-acc',
+          label: 'Training Accuracy',
+          value: trainVal,
+          sub,
+          icon: 'trending-up-outline' as const,
+        },
+        {
+          key: 'val-loss',
+          label: 'Validation Loss',
+          value: '—',
+          sub: 'Not stored in database',
+          icon: 'pulse-outline' as const,
+        },
+        {
+          key: 'model-version',
+          label: 'Model Version',
+          value: modelFormVersion.trim() || '—',
+          sub: modelFormName.trim() || 'Not Set',
+          icon: 'hardware-chip-outline' as const,
+        },
+      ];
     },
-    {
-      key: 'val-loss',
-      label: 'Validation Loss',
-      value: '0.048',
-      sub: '−0.012 improvement',
-      icon: 'pulse-outline' as const,
-    },
-    {
-      key: 'model-version',
-      label: 'Model Version',
-      value: modelFormVersion.trim() || '—',
-      sub: modelFormName.trim() || 'Not Set',
-      icon: 'hardware-chip-outline' as const,
-    },
-  ];
+    [adminStatsData.modelAccuracyPct, adminModelsList, modelFormName, modelFormVersion],
+  );
+
+  const specUsingDemoHomeSessions =
+    role === 'specialist' &&
+    !specSessionsLoading &&
+    !specSessionsError &&
+    specSessions.length === 0;
+
+  const specialistHomeSessions: EegSessionRow[] = specUsingDemoHomeSessions
+    ? SPECIALIST_DEMO_HOME_SESSIONS
+    : specSessions;
 
   const specKpis = [
     {
@@ -1502,30 +1731,28 @@ const handleAddPatient = async () => {
     {
       key: 'sessions',
       label: 'Total Sessions',
-      value: String(specSessions.length),
-      sub: 'All time',
+      value: String(specialistHomeSessions.length),
+      sub: specUsingDemoHomeSessions ? 'Demo preview' : 'All time',
     },
     {
       key: 'accuracy',
       label: 'Avg Accuracy',
-      value: specSessions.length > 0
-        ? `${Math.round(specSessions.reduce((sum, s) => sum + (s.confidence_level ?? 0), 0) / specSessions.length * 100)}%`
+      value: specialistHomeSessions.length > 0
+        ? `${Math.round(specialistHomeSessions.reduce((sum, s) => sum + (s.confidence_level ?? 0), 0) / specialistHomeSessions.length * 100)}%`
         : '—',
-      sub: 'Based on sessions',
+      sub: specUsingDemoHomeSessions ? 'Demo preview' : 'Based on sessions',
     },
   ];
 
   const specConnection = { label: 'EEG Connection', value: 'Connected', sub: 'EPOC X' };
 
-  const specRecentSessions = specSessions.slice(0, 4).map(s => ({
+  const specRecentSessions = specialistHomeSessions.slice(0, 4).map(s => ({
     id: `R-${s.session_id}`,
     patient: s.patient_national_id,
     word: sessionListTopWord(s),
     accuracy: sessionListTopWordAvgAcc(s),
     time: s.start_time ? new Date(s.start_time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—',
   }));
-
-  const specAlerts: { id: string; text: string; time: string; level: string }[] = [];
 
   const specReports = specSessions.map(s => ({
     id: `REP-${s.session_id}`,
@@ -1940,7 +2167,13 @@ const handleAddPatient = async () => {
   ];
 
 
-  const [systemLogs, setSystemLogs] = useState<any[]>([]);
+  const [systemLogs, setSystemLogs] = useState<AdminSystemLogRow[]>([]);
+
+  const adminSystemLogsDisplay = useMemo(() => {
+    if (systemLogs.length > 0) return systemLogs;
+    if (__DEV__) return MOCK_ADMIN_SYSTEM_LOGS;
+    return [];
+  }, [systemLogs]);
 
   const filteredAdminUsers = adminUsers.filter((u) => {
     const q = userSearch.trim().toLowerCase();
@@ -1992,40 +2225,6 @@ const handleAddPatient = async () => {
     { label: 'Uptime', value: '99.96%', status: 'good' as const },
     { label: 'Last Alert', value: 'EEG drop (5m ago)', status: 'warning' as const },
   ];
-
-  // Slightly varied mock points to feel more “live”
-  const modelAccuracyPoints = [
-    { label: 'W1', value: 89.5 },
-    { label: 'W2', value: 92.3 },
-    { label: 'W3', value: 90.8 },
-    { label: 'W4', value: 93.7 },
-    { label: 'W5', value: 92.9 },
-    { label: 'W6', value: 94.8 },
-    { label: 'W7', value: 91.6 },
-    { label: 'W8', value: 95.1 },
-  ];
-
-  const chartHeight = 260;
-  const chartPadding = spacing.lg + 10; // extra to separate Y labels from first tick
-  // Clamp to 50-100 domain for stable grid
-  const domainMin = 50;
-  const domainMax = 100;
-  const range = domainMax - domainMin;
-  const usableWidth = Math.max(1, chartWidth - chartPadding * 2);
-  const usableHeight = chartHeight - chartPadding * 2;
-
-  const chartPoints = modelAccuracyPoints.map((point, idx) => {
-    // Add a virtual "W0" slot so W1 starts after the Y-axis padding
-    const x =
-      chartPadding +
-      ((idx + 1) / (modelAccuracyPoints.length + 1)) * usableWidth;
-    const clamped = Math.min(domainMax, Math.max(domainMin, point.value));
-    const y =
-      chartHeight -
-      chartPadding -
-      ((clamped - domainMin) / range) * usableHeight;
-    return { ...point, x, y };
-  });
 
   const renderAdminContent = () => {
 
@@ -2498,91 +2697,6 @@ const handleAddPatient = async () => {
                 </>
               )}
             </View>
-
-            <View style={styles.modelHalfCard}>
-              <View style={styles.adminTableHeader}>
-                <View>
-                  <AppText style={styles.adminTableTitle}>Performance Overview</AppText>
-                  <AppText style={styles.adminTableSubtitle}>
-                    Accuracy vs epochs (mock data)
-                  </AppText>
-                </View>
-              </View>
-
-              <View
-                style={styles.adminChartBody}
-                onLayout={(e) => setChartWidth(e.nativeEvent.layout.width)}
-              >
-                {chartWidth > 0 && (
-                  <Svg width={chartWidth} height={chartHeight} style={StyleSheet.absoluteFill}>
-                    {/* Axes */}
-                    <Polyline
-                      points={`${chartPadding},${chartHeight - chartPadding} ${chartWidth - chartPadding},${chartHeight - chartPadding}`}
-                      stroke="rgba(55,93,152,0.3)"
-                      strokeWidth={2}
-                    />
-                    <Polyline
-                      points={`${chartPadding},${chartPadding} ${chartPadding},${chartHeight - chartPadding}`}
-                      stroke="rgba(55,93,152,0.3)"
-                      strokeWidth={2}
-                    />
-                    {/* Vertical grid lines */}
-                    {chartPoints.map((p, idx) => (
-                      <Polyline
-                        key={`v-${p.label}-${idx}`}
-                        points={`${p.x},${chartPadding} ${p.x},${chartHeight - chartPadding}`}
-                        stroke="rgba(55,93,152,0.08)"
-                        strokeWidth={1}
-                      />
-                    ))}
-                    {/* Horizontal grid lines */}
-                    {[0, 0.5, 1].map((t, idx) => {
-                      const y = chartPadding + t * usableHeight;
-                      return (
-                        <Polyline
-                          key={`h-${idx}`}
-                          points={`${chartPadding},${y} ${chartWidth - chartPadding},${y}`}
-                          stroke="rgba(55,93,152,0.08)"
-                          strokeWidth={1}
-                        />
-                      );
-                    })}
-                    {/* Line + points */}
-                    <Polyline
-                      points={chartPoints.map((p) => `${p.x},${p.y}`).join(' ')}
-                      stroke={colors.logo.oceanGreen}
-                      strokeWidth={3}
-                      fill="none"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    {chartPoints.map((p) => (
-                      <Circle
-                        key={p.label}
-                        cx={p.x}
-                        cy={p.y}
-                        r={6}
-                        fill={colors.background.white}
-                        stroke={colors.logo.oceanGreen}
-                        strokeWidth={3}
-                      />
-                    ))}
-                  </Svg>
-                )}
-                <View style={[styles.adminChartXAxis, { paddingHorizontal: chartPadding }]}>
-                  {chartPoints.map((p) => (
-                    <AppText key={p.label} style={styles.adminChartLabel}>
-                      {p.label}
-                    </AppText>
-                  ))}
-                </View>
-                <View style={styles.adminChartYAxis}>
-                  <AppText style={styles.adminChartYAxisLabel}>{domainMax}%</AppText>
-                  <AppText style={styles.adminChartYAxisLabel}>{domainMin}%</AppText>
-                  <AppText style={styles.adminChartYAxisLabel}> </AppText>
-                </View>
-              </View>
-            </View>
           </View>
         </View>
       );
@@ -2610,7 +2724,7 @@ const handleAddPatient = async () => {
               <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Timestamp</AppText>
             </View>
 
-            {systemLogs.length === 0 ? (
+            {adminSystemLogsDisplay.length === 0 ? (
               <View style={{ paddingVertical: 40, alignItems: 'center' }}>
                 <Ionicons name="document-outline" size={32} color={colors.text.secondary} />
                 <AppText style={[styles.adminTableSubtitle, { marginTop: 8 }]}>
@@ -2618,7 +2732,7 @@ const handleAddPatient = async () => {
                 </AppText>
               </View>
             ) : (
-              systemLogs.map((log) => (
+              adminSystemLogsDisplay.map((log) => (
                 <View key={log.id} style={styles.adminTableRow}>
                   <AppText style={[styles.adminTableCell, styles.adminColWide]}>
                     {log.id}
@@ -2884,132 +2998,54 @@ const handleAddPatient = async () => {
         </View>
 
         <View style={styles.adminChartRow}>
-          <View style={styles.adminChartCard}>
-            <View style={styles.adminTableHeader}>
-              <View>
-                <AppText style={styles.adminTableTitle}>Model Accuracy</AppText>
-                <AppText style={styles.adminTableSubtitle}>
-                  Last 8 weeks • CNN-LSTM
-                </AppText>
-              </View>
-              <View style={[styles.adminStatusPill, styles.adminPillInfo]}>
-                <AppText style={styles.adminStatusText}>Live</AppText>
-              </View>
-            </View>
-
-            <View
-              style={styles.adminChartBody}
-              onLayout={(e) => setChartWidth(e.nativeEvent.layout.width)}
-            >
-              {chartWidth > 0 && (
-                <Svg width={chartWidth} height={chartHeight} style={StyleSheet.absoluteFill}>
-                  {/* Axes */}
-                  <Polyline
-                    points={`${chartPadding},${chartHeight - chartPadding} ${chartWidth - chartPadding},${chartHeight - chartPadding}`}
-                    stroke="rgba(55,93,152,0.3)"
-                    strokeWidth={2}
-                  />
-                  <Polyline
-                    points={`${chartPadding},${chartPadding} ${chartPadding},${chartHeight - chartPadding}`}
-                    stroke="rgba(55,93,152,0.3)"
-                    strokeWidth={2}
-                  />
-                  {/* Vertical grid lines */}
-                  {chartPoints.map((p, idx) => (
-                    <Polyline
-                      key={`v-${p.label}-${idx}`}
-                      points={`${p.x},${chartPadding} ${p.x},${chartHeight - chartPadding}`}
-                      stroke="rgba(55,93,152,0.08)"
-                      strokeWidth={1}
+          <View style={styles.adminChartSide}>
+            <View style={styles.adminSideBySideCol}>
+              <View style={[styles.adminCard, styles.adminCardFillHeight]}>
+                <View style={styles.adminCardHeader}>
+                  <AppText style={styles.adminCardTitle}>System Health</AppText>
+                  <AppText style={styles.adminCardSubtitle}>Realtime Checks</AppText>
+                </View>
+                {systemHealth.map((item) => (
+                  <View key={item.label} style={styles.adminHealthRow}>
+                    <View
+                      style={[
+                        styles.adminStatusDot,
+                        item.status === 'good' && styles.adminDotSuccess,
+                        item.status === 'warning' && styles.adminDotWarning,
+                        item.status === 'info' && styles.adminDotInfo,
+                      ]}
                     />
-                  ))}
-                  {/* Horizontal grid lines at 50, 75, 100 */}
-                  {[0, 0.5, 1].map((t, idx) => {
-                    const y = chartPadding + t * usableHeight;
-                    return (
-                      <Polyline
-                        key={`h-${idx}`}
-                        points={`${chartPadding},${y} ${chartWidth - chartPadding},${y}`}
-                        stroke="rgba(55,93,152,0.08)"
-                        strokeWidth={1}
-                      />
-                    );
-                  })}
-                  {/* Line + points */}
-                  <Polyline
-                    points={chartPoints.map((p) => `${p.x},${p.y}`).join(' ')}
-                    stroke={colors.logo.oceanGreen}
-                    strokeWidth={3}
-                    fill="none"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  {chartPoints.map((p) => (
-                    <Circle
-                      key={p.label}
-                      cx={p.x}
-                      cy={p.y}
-                      r={6}
-                      fill={colors.background.white}
-                      stroke={colors.logo.oceanGreen}
-                      strokeWidth={3}
-                    />
-                  ))}
-                </Svg>
-              )}
-              <View style={[styles.adminChartXAxis, { paddingHorizontal: chartPadding }]}>
-                {chartPoints.map((p) => (
-                  <AppText key={p.label} style={styles.adminChartLabel}>
-                    {p.label}
-                  </AppText>
+                    <View style={styles.adminHealthTextCol}>
+                      <AppText style={styles.adminHealthLabel}>{item.label}</AppText>
+                      <AppText style={styles.adminHealthValue}>{item.value}</AppText>
+                    </View>
+                  </View>
                 ))}
               </View>
-              <View style={styles.adminChartYAxis}>
-                <AppText style={styles.adminChartYAxisLabel}>{domainMax}%</AppText>
-                <AppText style={styles.adminChartYAxisLabel}>{domainMin}%</AppText>
-                <AppText style={styles.adminChartYAxisLabel}> </AppText>
-              </View>
             </View>
-          </View>
 
-          <View style={styles.adminChartSide}>
-            <View style={styles.adminCard}>
-              <View style={styles.adminCardHeader}>
-                <AppText style={styles.adminCardTitle}>System Health</AppText>
-                <AppText style={styles.adminCardSubtitle}>Realtime Checks</AppText>
-              </View>
-              {systemHealth.map((item) => (
-                <View key={item.label} style={styles.adminHealthRow}>
-                  <View
-                    style={[
-                      styles.adminStatusDot,
-                      item.status === 'good' && styles.adminDotSuccess,
-                      item.status === 'warning' && styles.adminDotWarning,
-                      item.status === 'info' && styles.adminDotInfo,
-                    ]}
-                  />
-                  <View style={styles.adminHealthTextCol}>
-                    <AppText style={styles.adminHealthLabel}>{item.label}</AppText>
-                    <AppText style={styles.adminHealthValue}>{item.value}</AppText>
+            <View style={styles.adminSideBySideCol}>
+              <View style={[styles.adminCard, styles.adminCardFillHeight]}>
+                <View style={styles.adminCardHeader}>
+                  <AppText style={styles.adminCardTitle}>Active Model</AppText>
+                  <View style={[styles.adminStatusPill, styles.adminPillInfo]}>
+                    <AppText style={styles.adminStatusText} numberOfLines={1}>
+                      {[adminStatsData.modelName, adminStatsData.modelVersion].filter(Boolean).join(' ') || '—'}
+                    </AppText>
                   </View>
                 </View>
-              ))}
-            </View>
-
-            <View style={styles.adminCard}>
-              <View style={styles.adminCardHeader}>
-                <AppText style={styles.adminCardTitle}>Active Model</AppText>
-                <View style={[styles.adminStatusPill, styles.adminPillInfo]}>
-                  <AppText style={styles.adminStatusText}>CNN-LSTM v1.0</AppText>
+                <View style={styles.adminModelRow}>
+                  <AppText style={styles.adminModelLabel}>Accuracy</AppText>
+                  <AppText style={styles.adminModelValue}>
+                    {adminStatsData.modelAccuracyPct != null ? `${adminStatsData.modelAccuracyPct}%` : '—'}
+                  </AppText>
                 </View>
-              </View>
-              <View style={styles.adminModelRow}>
-                <AppText style={styles.adminModelLabel}>Accuracy</AppText>
-                <AppText style={styles.adminModelValue}>94.5%</AppText>
-              </View>
-              <View style={styles.adminModelRow}>
-                <AppText style={styles.adminModelLabel}>Active</AppText>
-                <AppText style={styles.adminModelValue}>Since 08:00</AppText>
+                <View style={styles.adminModelRow}>
+                  <AppText style={styles.adminModelLabel}>Status</AppText>
+                  <AppText style={styles.adminModelValue}>
+                    {adminStatsData.modelStatus || '—'}
+                  </AppText>
+                </View>
               </View>
             </View>
           </View>
@@ -3034,7 +3070,7 @@ const handleAddPatient = async () => {
             <AppText style={[styles.adminTableHeadText, styles.adminColMedium]}>Timestamp</AppText>
           </View>
 
-          {systemLogs.length === 0 ? (
+          {adminSystemLogsDisplay.length === 0 ? (
             <View style={{ paddingVertical: 40, alignItems: 'center' }}>
               <Ionicons name="document-outline" size={32} color={colors.text.secondary} />
               <AppText style={[styles.adminTableSubtitle, { marginTop: 8 }]}>
@@ -3042,7 +3078,7 @@ const handleAddPatient = async () => {
               </AppText>
             </View>
           ) : (
-            systemLogs.slice(0, 5).map((log) => (
+            adminSystemLogsDisplay.slice(0, 5).map((log) => (
               <View key={log.id} style={styles.adminTableRow}>
                 <AppText style={[styles.adminTableCell, styles.adminColWide]}>{log.id}</AppText>
                 <AppText style={[styles.adminTableCell, styles.adminColWide]}>{log.userName}</AppText>
@@ -3063,7 +3099,7 @@ const handleAddPatient = async () => {
     if (activeSidebarItem === 'spec-patients') {
       return (
         <View style={styles.adminFullWidthSection}>
-          <View style={[styles.adminTableCard, styles.adminFullWidthCard]}>
+          <View style={styles.adminTableCard}>
             <View style={styles.adminTableHeader}>
               <View>
                 <AppText style={styles.adminTableTitle}>Patient Management</AppText>
@@ -3358,7 +3394,7 @@ const handleAddPatient = async () => {
                       style={styles.adminIconButton}
                       onPress={async () => {
                         try {
-                          const res = await fetch(`${API_BASE}/specialist/patients/${p.nationalId}/status`, {
+                          const res = await fetch(`${getApiBase()}/specialist/patients/${p.nationalId}/status`, {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -3509,7 +3545,7 @@ const handleAddPatient = async () => {
     if (activeSidebarItem === 'spec-reports') {
       return (
         <View style={styles.adminFullWidthSection}>
-          <View style={[styles.adminTableCard, styles.adminFullWidthCard]}>
+          <View style={styles.adminTableCard}>
             <View style={styles.adminTableHeader}>
               <View>
                 <AppText style={styles.adminTableTitle}>Reports</AppText>
@@ -3754,8 +3790,13 @@ const handleAddPatient = async () => {
           <View>
             <AppText style={styles.adminTableTitle}>Specialist Dashboard</AppText>
             <AppText style={styles.adminTableSubtitle}>
-              Monitor assigned patients, sessions, and alerts
+              Monitor assigned patients and sessions
             </AppText>
+            {specUsingDemoHomeSessions ? (
+              <AppText style={[styles.adminTableSubtitle, { marginTop: spacing.xs, opacity: 0.9 }]}>
+                Session KPIs below use demo data until the API returns your saved sessions.
+              </AppText>
+            ) : null}
           </View>
         </View>
 
@@ -3772,6 +3813,11 @@ const handleAddPatient = async () => {
         <View style={[styles.modelRow, { marginBottom: spacing.lg }]}>
           <View style={[styles.modelHalfCard, styles.specWideCard, styles.specRecentCard]}>
             <AppText style={styles.adminTableTitle}>Recent Sessions</AppText>
+            {specUsingDemoHomeSessions ? (
+              <AppText style={[styles.adminTableSubtitle, { marginBottom: spacing.xs }]}>
+                Demo preview — connect the backend and save sessions to replace these rows.
+              </AppText>
+            ) : null}
             <View style={styles.adminTableHeadRow}>
               <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>ID</AppText>
               <AppText style={[styles.adminTableHeadText, styles.adminColWide]}>Patient</AppText>
@@ -3809,26 +3855,51 @@ const handleAddPatient = async () => {
           </View>
         </View>
 
-        <View style={styles.modelRow}>
-          <View style={[styles.modelHalfCard, { width: '100%' }]}>
-            <AppText style={styles.adminTableTitle}>Critical Alerts</AppText>
-            {specAlerts.map((a) => (
-              <View key={a.id} style={styles.specAlertRow}>
-                <View
-                  style={[
-                    styles.adminStatusDot,
-                    a.level === 'high' && styles.adminDotWarning,
-                    a.level === 'med' && styles.adminDotInfo,
-                    a.level === 'low' && styles.adminDotSuccess,
-                  ]}
-                />
-                <View style={{ flex: 1 }}>
-                  <AppText style={styles.adminTableCell}>{a.text}</AppText>
-                  <AppText style={styles.adminTableSubtitle}>{a.time}</AppText>
-                </View>
-              </View>
-            ))}
+        <View style={[styles.adminTableCard, { marginTop: spacing.sm }]}>
+          <View style={styles.adminTableHeader}>
+            <View>
+              <AppText style={styles.adminTableTitle}>Patient communication needs</AppText>
+              <AppText style={styles.adminTableSubtitle}>
+                Recent decoded intents from assigned patients (same pool as the notification bell)
+              </AppText>
+            </View>
           </View>
+          <View style={styles.adminTableHeadRow}>
+            <AppText style={[styles.adminTableHeadText, styles.specReportPatientCol]}>Patient</AppText>
+            <AppText style={[styles.adminTableHeadText, styles.adminColNarrow]}>ID</AppText>
+            <AppText style={[styles.adminTableHeadText, styles.specReportWordCol]}>Need</AppText>
+            <AppText style={[styles.adminTableHeadText, styles.adminColSmall]}>Confidence</AppText>
+            <AppText style={[styles.adminTableHeadText, styles.specReportDateCol]}>When</AppText>
+          </View>
+          {specPatientNotifs.length === 0 ? (
+            <View style={{ paddingVertical: spacing.md }}>
+              <AppText style={styles.adminTableSubtitle}>No patient notifications yet.</AppText>
+            </View>
+          ) : (
+            specPatientNotifs.map((n) => (
+              <View key={String(n.notification_id)} style={styles.adminTableRow}>
+                <AppText style={[styles.adminTableCell, styles.specReportPatientCol]}>
+                  {n.patient_name || n.patient_national_id}
+                </AppText>
+                <AppText style={[styles.adminTableCell, styles.adminColNarrow]}>{n.patient_national_id}</AppText>
+                <AppText style={[styles.adminTableCell, styles.specReportWordCol]}>{n.detected_word}</AppText>
+                <AppText style={[styles.adminTableCellRight, styles.adminColSmall]}>
+                  {n.confidence != null ? `${Math.round(n.confidence * 100)}%` : '—'}
+                </AppText>
+                <AppText style={[styles.adminTableCell, styles.specReportDateCol]}>
+                  {n.event_time
+                    ? new Date(n.event_time).toLocaleString('en-GB', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false,
+                      })
+                    : '—'}
+                </AppText>
+              </View>
+            ))
+          )}
         </View>
       </View>
     );
@@ -5971,12 +6042,6 @@ const styles = StyleSheet.create({
     fontWeight: typography.weights.semibold,
     marginTop: spacing.xs / 2,
   },
-  specAlertRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
   specWideCard: {
     flex: 5.5,
     minWidth: 680,
@@ -6274,91 +6339,21 @@ const styles = StyleSheet.create({
           elevation: 4,
         }),
   },
-  adminChartCard: {
-    flex: 2,
-    minWidth: 320,
-    backgroundColor: colors.background.white,
-    borderRadius: 20,
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.primary[100],
-    ...(Platform.OS === 'web'
-      ? { boxShadow: '0 16px 36px rgba(55,93,152,0.14)' }
-      : {
-          shadowColor: colors.primary[500],
-          shadowOffset: { width: 0, height: 8 },
-          shadowOpacity: 0.16,
-          shadowRadius: 14,
-          elevation: 5,
-        }),
-  },
   adminChartSide: {
     flex: 1,
-    minWidth: 260,
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.md,
   },
-  adminChartBody: {
-    marginTop: spacing.md,
-    height: 260,
-    borderRadius: 14,
-    backgroundColor: colors.background.light,
-    overflow: 'hidden',
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.lg,
-    position: 'relative',
+  /** Equal columns for System Health + Active Model; wraps when too narrow. */
+  adminSideBySideCol: {
+    flex: 1,
+    minWidth: 280,
+    alignSelf: 'stretch',
   },
-  adminChartGridLine: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: '0%',
-    height: 1,
-    backgroundColor: 'rgba(55,93,152,0.08)',
-  },
-  adminChartPoint: {
-    position: 'absolute',
-    alignItems: 'center',
-  },
-  adminChartDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: colors.logo.oceanGreen,
-    borderWidth: 2,
-    borderColor: colors.background.white,
-  },
-  adminChartLine: {
-    position: 'absolute',
-    top: 4,
-    left: '50%',
-    height: 2,
-    backgroundColor: colors.logo.oceanGreen,
-    opacity: 0.6,
-  },
-  adminChartLabel: {
-    marginTop: spacing.xs,
-    fontSize: typography.sizes.xs,
-    color: colors.text.secondary,
-  },
-  adminChartXAxis: {
-    position: 'absolute',
-    bottom: spacing.sm,
-    left: spacing.md,
-    right: spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  adminChartYAxis: {
-    position: 'absolute',
-    top: spacing.sm,
-    bottom: spacing.sm,
-    left: spacing.xs,
-    paddingRight: spacing.xs,
-    justifyContent: 'space-between',
-  },
-  adminChartYAxisLabel: {
-    fontSize: typography.sizes.xs,
-    color: colors.text.secondary,
+  adminCardFillHeight: {
+    flex: 1,
   },
   modelStatHeader: {
     flexDirection: 'row',

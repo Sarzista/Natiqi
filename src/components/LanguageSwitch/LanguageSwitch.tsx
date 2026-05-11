@@ -13,7 +13,9 @@ import { useAuth } from '../../context/AuthContext';
 import { colors, spacing } from '../../theme';
 import {
   fetchNotifications,
+  fetchSpecialistPatientNotifications,
   markAllNotificationsSeen,
+  markAllSpecialistPatientNotificationsSeen,
   markNotificationSeen,
   type NotificationRow,
 } from '../../services/notificationService';
@@ -85,15 +87,21 @@ export const LanguageSwitch: React.FC<LanguageSwitchProps> = ({
     setNotifLoading(true);
     setNotifError(null);
     try {
-      const res = await fetchNotifications({ national_id: nationalId, limit: 50, offset: 0 });
-      setNotifItems(res.items || []);
-      setNotifUnseen(res.unseen_count || 0);
+      if (authRole === 'specialist') {
+        const res = await fetchSpecialistPatientNotifications({ specialist_id: nationalId, limit: 50 });
+        setNotifItems(res.items || []);
+        setNotifUnseen(res.unseen_count || 0);
+      } else {
+        const res = await fetchNotifications({ national_id: nationalId, limit: 50, offset: 0 });
+        setNotifItems(res.items || []);
+        setNotifUnseen(res.unseen_count || 0);
+      }
     } catch (e: unknown) {
       setNotifError(e instanceof Error ? e.message : 'Failed to load notifications');
     } finally {
       setNotifLoading(false);
     }
-  }, [nationalId, roleUsesInAppNotifications]);
+  }, [nationalId, roleUsesInAppNotifications, authRole]);
 
   React.useEffect(() => {
     if (!showNotifications) return;
@@ -114,12 +122,22 @@ export const LanguageSwitch: React.FC<LanguageSwitchProps> = ({
   const markSeen = async (n: NotificationRow) => {
     if (!nationalId) return;
     if (n.seen) return;
+    const ownerNationalId =
+      authRole === 'specialist' ? String(n.patient_national_id || '').trim() : nationalId;
+    if (!ownerNationalId) return;
     try {
-      const res = await markNotificationSeen({ national_id: nationalId, notification_id: n.notification_id });
+      const res = await markNotificationSeen({
+        national_id: ownerNationalId,
+        notification_id: n.notification_id,
+      });
       setNotifItems((prev) =>
         prev.map((x) => (x.notification_id === n.notification_id ? { ...x, seen: true } : x)),
       );
-      setNotifUnseen(res.unseen_count || 0);
+      if (authRole === 'specialist') {
+        await refreshNotifications();
+      } else {
+        setNotifUnseen(res.unseen_count || 0);
+      }
     } catch (e) {
       // keep silent in UI for now
     }
@@ -130,9 +148,15 @@ export const LanguageSwitch: React.FC<LanguageSwitchProps> = ({
     setNotifMarkAllBusy(true);
     setNotifError(null);
     try {
-      const res = await markAllNotificationsSeen({ national_id: nationalId });
-      setNotifItems((prev) => prev.map((x) => ({ ...x, seen: true })));
-      setNotifUnseen(res.unseen_count ?? 0);
+      if (authRole === 'specialist') {
+        const res = await markAllSpecialistPatientNotificationsSeen({ specialist_id: nationalId });
+        setNotifItems((prev) => prev.map((x) => ({ ...x, seen: true })));
+        setNotifUnseen(res.unseen_count ?? 0);
+      } else {
+        const res = await markAllNotificationsSeen({ national_id: nationalId });
+        setNotifItems((prev) => prev.map((x) => ({ ...x, seen: true })));
+        setNotifUnseen(res.unseen_count ?? 0);
+      }
     } catch (e: unknown) {
       setNotifError(e instanceof Error ? e.message : 'Failed to mark all as seen');
     } finally {
@@ -247,6 +271,9 @@ export const LanguageSwitch: React.FC<LanguageSwitchProps> = ({
                           style={[styles.notifItem, !n.seen && styles.notifItemUnseen]}
                           onPress={() => markSeen(n)}
                         >
+                          {authRole === 'specialist' && n.patient_name ? (
+                            <AppText style={styles.notifPatientLine}>{n.patient_name}</AppText>
+                          ) : null}
                           <AppText style={styles.notifWord}>{n.detected_word}</AppText>
                           <AppText style={styles.notifFooter}>{formatNotifFooter(n)}</AppText>
                           <View style={styles.notifSeenRow}>
@@ -377,6 +404,13 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: colors.primary[400],
     backgroundColor: 'rgba(71, 190, 127, 0.18)',
+  },
+  notifPatientLine: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+    color: colors.logo.vistaBlue,
+    marginBottom: 2,
   },
   notifWord: {
     fontSize: 24,

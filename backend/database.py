@@ -212,9 +212,23 @@ def seed_database():
             specialist_national_id = dr_omar.national_id,
         )
 
+        # Demo patient for specialist Omar (3030303030); password 123 for app testing
+        patient_1616 = Patient(
+            national_id            = 1616161616,
+            name                   = 'Ayla Al-Naimi',
+            role                   = 'patient',
+            password               = generate_password_hash('123'),
+            date_of_birth          = date(2000, 1, 16),
+            gender                 = 'Female',
+            room_number            = '1616',
+            device                 = 'EPOC X',
+            status                 = 'Active',
+            specialist_national_id = dr_omar.national_id,
+        )
+
         all_patients = [
             patient_sarah, patient_fatima, patient_hassan, patient_maha,
-            patient_yousef, patient_noura, patient_omar, patient_rania,
+            patient_yousef, patient_noura, patient_omar, patient_rania, patient_1616,
         ]
         db.session.add_all(all_patients)
         db.session.commit()
@@ -339,7 +353,33 @@ def seed_database():
             session_status         = 'Ended',
         )
 
-        all_sessions = [session_1, session_2, session_3, session_4, session_5, session_6]
+        session_7 = EEGSession(
+            patient_national_id    = patient_1616.national_id,
+            specialist_national_id = dr_omar.national_id,
+            model_id               = model_v2.model_id,
+            start_time             = now - timedelta(hours=2),
+            end_time               = now - timedelta(hours=1, minutes=30),
+            detected_word          = 'Thirst',
+            confidence_level       = 0.8900,
+            device                 = 'EPOC X',
+            channels               = 14,
+            session_status         = 'Ended',
+        )
+
+        session_8 = EEGSession(
+            patient_national_id    = patient_1616.national_id,
+            specialist_national_id = dr_omar.national_id,
+            model_id               = model_v2.model_id,
+            start_time             = now - timedelta(minutes=50),
+            end_time               = now - timedelta(minutes=20),
+            detected_word          = 'Medicine',
+            confidence_level       = 0.8700,
+            device                 = 'EPOC X',
+            channels               = 14,
+            session_status         = 'Ended',
+        )
+
+        all_sessions = [session_1, session_2, session_3, session_4, session_5, session_6, session_7, session_8]
         db.session.add_all(all_sessions)
         db.session.commit()
 

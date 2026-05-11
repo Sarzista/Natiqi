@@ -24,7 +24,7 @@ import { AnimatedButton } from '../../components/AnimatedButton';
 import { colors, spacing, typography, gradientTextBgShiftKeyframes } from '../../theme';
 import { RootStackParamList } from '../../types/navigation';
 import { UserRole } from '../LandingScreen';
-import { API_BASE } from '../../config/apiBase';
+import { getApiBase } from '../../config/apiBase';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 600;
@@ -74,7 +74,7 @@ export const ResetPasswordScreen: React.FC<ResetPasswordScreenProps> = ({ naviga
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/auth/reset-password`, {
+      const response = await fetch(`${getApiBase()}/auth/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

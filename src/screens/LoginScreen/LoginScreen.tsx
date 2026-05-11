@@ -34,9 +34,12 @@ const { width, height } = Dimensions.get('window');
 const isSmallScreen = width < 600;
 const PASSWORD_ICON_GUTTER = 48;
 
-/** Persists last-entered credentials (local / browser via AsyncStorage). */
-const LOGIN_SAVED_FIELDS_KEY = '@natiqi_login_saved_fields';
+/** Persists last-entered credentials per login flow (recipient / specialist / admin). */
+const LOGIN_SAVED_FIELDS_KEY_PREFIX = '@natiqi_login_saved_fields_v2:';
 
+function loginSavedFieldsStorageKey(role: UserRole): string {
+  return `${LOGIN_SAVED_FIELDS_KEY_PREFIX}${role}`;
+}
 
 type LoginScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Login'>;
 type LoginScreenRouteProp = RouteProp<RootStackParamList, 'Login'>;
@@ -62,9 +65,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
 
   useEffect(() => {
     let cancelled = false;
+    setEmail('');
+    setPassword('');
+    setFieldsRestored(false);
     (async () => {
       try {
-        const raw = await AsyncStorage.getItem(LOGIN_SAVED_FIELDS_KEY);
+        const raw = await AsyncStorage.getItem(loginSavedFieldsStorageKey(role));
         if (cancelled) return;
         if (raw) {
           const parsed = JSON.parse(raw) as { nationalId?: string; password?: string };
@@ -85,21 +91,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [role]);
 
   useEffect(() => {
     const t = setTimeout(() => {
       if (!fieldsRestored) return;
       const id = email.trim();
       const pw = password;
-      if (!id && !pw) return;
-      AsyncStorage.setItem(
-        LOGIN_SAVED_FIELDS_KEY,
-        JSON.stringify({ nationalId: id, password: pw }),
-      ).catch(() => undefined);
+      const key = loginSavedFieldsStorageKey(role);
+      if (!id && !pw) {
+        AsyncStorage.removeItem(key).catch(() => undefined);
+        return;
+      }
+      AsyncStorage.setItem(key, JSON.stringify({ nationalId: id, password: pw })).catch(() => undefined);
     }, 450);
     return () => clearTimeout(t);
-  }, [email, password, fieldsRestored]);
+  }, [email, password, fieldsRestored, role]);
 
   const loginSubtitleKey =
     role === 'admin'
@@ -137,7 +144,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation, route }) =
     try {
       await login(email, password, role);
       await AsyncStorage.setItem(
-        LOGIN_SAVED_FIELDS_KEY,
+        loginSavedFieldsStorageKey(role),
         JSON.stringify({ nationalId: email.trim(), password }),
       ).catch(() => undefined);
       navigation.navigate('Dashboard');
