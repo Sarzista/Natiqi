@@ -293,25 +293,6 @@ class Alert(db.Model):
     alert_timestamp        = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 
-
-
-# ──────────────────────────────────────────────
-# Session Logs
-# ──────────────────────────────────────────────
-class SessionLog(db.Model):
-    __tablename__ = 'session_log'
-
-    log_id            = db.Column(db.String(100), primary_key=True, unique=True)
-    user_national_id = db.Column(db.String(20), nullable=True)
-    user_name         = db.Column(db.String(100), nullable=False)
-    role              = db.Column(db.Enum('Patient', 'Specialist', 'Admin', name='log_role'), nullable=False)
-    event_description = db.Column(db.Text, nullable=False)
-    status            = db.Column(db.Enum('completed', 'info', 'warning', name='log_status'), nullable=False)
-    log_timestamp     = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    device            = db.Column(db.String(50), default='EPOC X')
-    duration          = db.Column(db.String(100))
-
-
 # ──────────────────────────────────────────────
 # System Log  (admin/specialist management actions)
 # ──────────────────────────────────────────────

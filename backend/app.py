@@ -18,6 +18,8 @@ import uuid
 import secrets
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import re as _re
+
 
 # Windows consoles often use cp1252; set UTF-8 before any prints that may use non-ASCII
 if hasattr(sys.stdout, "reconfigure"):
@@ -444,6 +446,12 @@ def login():
         return jsonify({'error': 'Please verify your account with the code sent to your email (check dev hint on verify screen if testing).'}), 403
     
     print(f"✅ Login successful: {getattr(user, 'name', None) or national_id}")
+    write_system_log(
+        getattr(user, 'name', str(national_id)),
+        str(national_id),
+        'Logged in',
+        role='RegisteredUser' if role == 'RegisteredUser' else role,
+    )
     return jsonify(user.to_dict()), 200
 
 ##======    SignUp   ======##
@@ -463,17 +471,33 @@ def register():
     if not all([national_id, name, email, password, phone_num, gender]):
         return jsonify({'error': 'All fields are required'}), 400
     if gender not in ('Male', 'Female'):
-        return jsonify({'error': 'Gender must be Male or Female'}), 400
+        return jsonify({'error': 'Gender must be Male or Female'}), 400\
+
+    if not _re.match(r'^[A-Za-z\u0600-\u06FF\s.\-]+$', name):
+        return jsonify({'error': 'Name must contain only letters, spaces, dots, or hyphens'}), 400
+
+    if not _re.match(r'^\d{10}$', str(national_id)):
+        return jsonify({'error': 'National ID must be exactly 10 digits'}), 400
+
+    if len(password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters'}), 400
+
+    for table in (Admin, Specialist, Patient):
+        if table.query.filter_by(national_id=national_id).first():
+            return jsonify({'error': 'National ID already registered'}), 409
 
     existing = RegisteredUser.query.filter_by(national_id=national_id).first()
-    # Verified accounts cannot be replaced
     if existing and existing.is_verified:
         return jsonify({'error': 'National ID already registered'}), 409
 
-    # Email / phone must stay unique across other rows (allow same national_id to fix typos)
+    for table in (Admin, Specialist, Patient):
+        if table.query.filter_by(email=email).first():
+            return jsonify({'error': 'Email already registered'}), 409
+        
     email_owner = RegisteredUser.query.filter_by(email=email).first()
     if email_owner and email_owner.national_id != national_id:
         return jsonify({'error': 'Email already registered'}), 409
+    
     phone_owner = RegisteredUser.query.filter_by(phone_num=phone_num).first()
     if phone_owner and phone_owner.national_id != national_id:
         return jsonify({'error': 'phone_num already registered'}), 409
@@ -492,6 +516,7 @@ def register():
         existing.verification_code = code
         existing.verification_expires = expires
         db.session.commit()
+        write_system_log(name, str(national_id), 'Updated unverified account details', role='RegisteredUser')
         msg = 'Details updated. Verify with the new code sent to your email (or dev hint below).'
     else:
         new_user = RegisteredUser(
@@ -507,6 +532,7 @@ def register():
         )
         db.session.add(new_user)
         db.session.commit()
+        write_system_log(name, str(national_id), 'Registered new account', role='RegisteredUser')
         msg = 'Account created successfully!'
 
     print(f"\n📧 Verification code for {email} (national_id={national_id}): {code}\n")
@@ -539,6 +565,7 @@ def verify_account():
     user.verification_code = None
     user.verification_expires = None
     db.session.commit()
+    write_system_log(user.name, str(national_id), 'Account verified successfully', role='RegisteredUser')
     return jsonify({'message': 'Account verified. You can log in.'}), 200
 
 
@@ -643,6 +670,12 @@ def reset_password():
     user.verification_expires = None
     db.session.commit()
 
+    write_system_log(
+        getattr(user, 'name', str(national_id)),
+        str(national_id),
+        'Reset password',
+        role='RegisteredUser' if role == 'RegisteredUser' else role,
+    )
     print(f"✅ Password reset for national_id={national_id}")
     return jsonify({'message': 'Password updated successfully. You can now log in.'}), 200
 
@@ -698,6 +731,20 @@ def add_user():
     if not all([national_id, name, email, role]):
         return jsonify({'error': 'All fields are required'}), 400
 
+    if not _re.match(r'^[A-Za-z\u0600-\u06FF\s.\-]+$', name):
+        return jsonify({'error': 'Name must contain only letters, spaces, dots, or hyphens'}), 400
+
+    if not _re.match(r'^\d{10}$', str(national_id)):
+        return jsonify({'error': 'National ID must be exactly 10 digits'}), 400
+
+    for table in tables:
+        if table.query.filter_by(national_id=national_id).first():
+            return jsonify({'error': 'National ID already exists in the system'}), 409
+
+    for table in tables:
+        if hasattr(table, 'email') and table.query.filter_by(email=email).first():
+            return jsonify({'error': 'Email already exists in the system'}), 409
+        
     try:
         if role == 'Admin':
             if Admin.query.filter_by(national_id=national_id).first():
@@ -811,15 +858,29 @@ def delete_user(national_id):
 ##======    Admin: Edit user   ======##
 @app.route('/admin/users/<national_id>', methods=['PUT'])
 def edit_user(national_id):
-    data  = request.get_json()
-    name  = data.get('name', '').strip()
-    email = data.get('email', '').strip()
-    role  = data.get('role', '')
+    data   = request.get_json()
+    name   = data.get('name', '').strip()
+    email  = data.get('email', '').strip()
+    role   = data.get('role', '')
+    phone  = data.get('phone', '').strip()
+    gender = data.get('gender', '').strip()
     performed_by_name = data.get('performed_by_name', 'Admin')
     performed_by_id   = data.get('performed_by_id', 'unknown')
 
+    # Required fields
     if not all([name, email]):
         return jsonify({'error': 'Name and email are required'}), 400
+
+    # Name: letters and spaces only (English + Arabic)
+    import re as _re
+    if not _re.match(r'^[A-Za-z\u0600-\u06FF\s.\-]+$', name):
+        return jsonify({'error': 'Name must contain only letters, spaces, dots, or hyphens'}), 400
+
+    # Basic email format check
+    if not _re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        return jsonify({'error': 'Invalid email format'}), 400
+
+    # Find the user being edited
     if role == 'Admin':
         user = Admin.query.filter_by(national_id=national_id).first()
     elif role == 'Specialist':
@@ -828,11 +889,29 @@ def edit_user(national_id):
         user = RegisteredUser.query.filter_by(national_id=national_id).first()
     if not user:
         return jsonify({'error': 'User not found'}), 404
+
+    # Check email uniqueness across ALL tables (skip current user's own row)
+    for table in (Admin, Specialist, RegisteredUser):
+        existing = table.query.filter_by(email=email).first()
+        if existing and str(existing.national_id) != str(national_id):
+            return jsonify({'error': 'Email already in use by another account'}), 409
+
     user.name  = name
     user.email = email
-    db.session.commit()
+    if phone:
+        user.phone_num = phone
+    if gender in ('Male', 'Female'):
+        user.gender = gender
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to update user: {e}'}), 500
+
     write_system_log(performed_by_name, performed_by_id, f'Edited user info: {user.name} — ID: {national_id}', role='Admin')
     return jsonify({'message': 'User updated successfully'}), 200
+
 
 def _current_production_model():
     """Prefer latest Active model; otherwise latest row by id."""
@@ -890,9 +969,17 @@ def admin_list_models():
 @app.route('/admin/current-model', methods=['PUT'])
 def put_current_model_info():
     data = request.get_json() or {}
-    name = data.get('model_name', '').strip()
-    version = data.get('model_version', '').strip()
+    name     = data.get('model_name', '').strip()
+    version  = data.get('model_version', '').strip()
     date_str = data.get('training_date', '').strip()
+    acc_raw  = data.get('model_accuracy', None)
+    try:
+        acc = Decimal(str(acc_raw)) if acc_raw not in (None, '') else None
+        if acc is not None and not (0 <= acc <= 1):
+            return jsonify({'error': 'Accuracy must be between 0 and 1 (e.g. 0.87 for 87%)'}), 400
+    except Exception:
+        return jsonify({'error': 'Invalid accuracy value'}), 400
+    
     performed_by_name = data.get('performed_by_name', 'Admin')
     performed_by_id = str(data.get('performed_by_id', '') or '').strip() or 'unknown'
 
@@ -914,14 +1001,16 @@ def put_current_model_info():
     m = _current_production_model()
     try:
         if m:
-            m.model_name = name
+            m.model_name    = name
             m.model_version = version
             m.training_date = training_dt
+            if acc is not None:
+                m.model_accuracy = acc
         else:
             db.session.add(Model(
                 model_name=name,
                 model_version=version,
-                model_accuracy=Decimal('0.9500'),
+                model_accuracy=acc if acc is not None else Decimal('0.8700'),
                 model_status='Active',
                 training_date=training_dt,
                 admin_national_id=admin_nat,
@@ -1196,6 +1285,7 @@ def create_live_demo_session():
     events = data.get('events', None)  # [{event_time, detected_word, confidence}]
     start_time = str(data.get('start_time') or '').strip()
     end_time = str(data.get('end_time') or '').strip()
+    specialist_national_id = str(data.get('specialist_national_id', '') or '').strip() or None
 
     if not patient_national_id or not detected_word or confidence is None:
         return jsonify({'error': 'patient_national_id, detected_word and confidence are required'}), 400
@@ -1256,7 +1346,7 @@ def create_live_demo_session():
     try:
         row = EEGSession(
             patient_national_id=patient_national_id,
-            specialist_national_id=None,
+            specialist_national_id=str(data.get('specialist_national_id', '') or '').strip() or None,
             model_id=(m.model_id if m else None),
             start_time=st,
             end_time=et,
@@ -1429,8 +1519,8 @@ def live_demo_session_report_xlsx(session_id: int):
     ws_pred = wb.create_sheet('Predictions')
     ws_sum = wb.create_sheet('Summary')
 
-    header_font = Font(bold=True, color='FFFFFF')
-    header_fill = PatternFill('solid', fgColor='1F2937')
+    header_font = Font(bold=True, color='000000')
+    header_fill = PatternFill('solid', fgColor='BDD7EE')
     header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
     cell_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
@@ -1454,12 +1544,30 @@ def live_demo_session_report_xlsx(session_id: int):
         duration_sec = 0
     duration_label = f'{duration_sec // 3600:02d}:{(duration_sec % 3600) // 60:02d}:{duration_sec % 60:02d}'
 
+    # Top predicted word (most frequent from events, fallback to detected_word)
+    _top_word_raw = most_word if word_counts else (s.detected_word or '')
+    _word_map = {
+        'جوع': 'Hunger (جوع)',
+        'عطش': 'Thirst (عطش)',
+        'حمام': 'Bathroom (حمام)',
+        'دواء': 'Medicine (دواء)',
+    }
+    _top_word_fmt = _word_map.get(_top_word_raw.strip(), _top_word_raw or '—')
+
+    # Avg accuracy from events matching top word, fallback to session confidence
+    _top_confs = [float(e.confidence) for e in evs if e.detected_word == _top_word_raw and e.confidence is not None]
+    _avg_acc_val = (sum(_top_confs) / len(_top_confs)) if _top_confs else (float(s.confidence_level) if s.confidence_level is not None else None)
+    _avg_acc_fmt = f'{round(_avg_acc_val * 100)}%' if _avg_acc_val is not None else '—'
+
+    # Date & Time (prefer end_time, fallback start_time)
+    _date_fmt = _fmt_dt(s.end_time or s.start_time) or '—'
+
     _write_kv_table(ws_info, [
-        ('Session ID', s.session_id),
-        ('Start', _fmt_dt(s.start_time)),
-        ('End', _fmt_dt(s.end_time)),
-        ('Duration', duration_label),
-        ('Avg confidence', (float(s.confidence_level) if s.confidence_level is not None else '')),
+        ('Report ID', f'REP-{s.session_id}'),
+        ('Patient (National ID)', str(s.patient_national_id)),
+        ('Date & Time', _date_fmt),
+        ('Top Predicted Word', _top_word_fmt),
+        ('Avg Accuracy', _avg_acc_fmt),
     ])
 
     # Predictions sheet

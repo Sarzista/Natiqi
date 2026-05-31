@@ -136,8 +136,8 @@ def load_demo_bundle(subject: str = "aya") -> Dict[str, Any]:
 def _maybe_transform(X: np.ndarray, model: Any = None, scaler: Any = None, riemann: Any = None) -> np.ndarray:
     out = X
     # Some saved artifacts store preprocessing pieces; apply if available.
-    if riemann is not None and hasattr(riemann, "transform"):
-        out = riemann.transform(out)
+    #if riemann is not None and hasattr(riemann, "transform"):
+    #    out = riemann.transform(out)
     if scaler is not None and hasattr(scaler, "transform"):
         # Only apply if feature dimensionality matches what scaler was trained on.
         scaler_n = getattr(scaler, "n_features_in_", None)

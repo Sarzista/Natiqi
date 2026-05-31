@@ -36,7 +36,7 @@ const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 const generateEegWave = (phaseOffset: number, styleSeed: number, intensity01: number) => {
   const values: number[] = [];
   const e = clamp01(intensity01);
-  const ampScale = 0.55 + e * 1.25;
+  const ampScale = 0.3 + e * 0.5;
 
   // Map seed -> subtle frequency/shape changes (demo-only)
   const seedA = ((styleSeed % 97) / 97) * 0.9 + 0.55;   // 0.55..1.45
@@ -81,7 +81,7 @@ export const EegMiniChart: React.FC<EegMiniChartProps> = ({
 
   useEffect(() => {
     if (!running) return;
-    const t = setInterval(() => setPhase(p => (p + 0.04) % 1), 120);
+    const t = setInterval(() => setPhase(p => p + 0.008), 50);
     return () => clearInterval(t);
   }, [running]);
 
