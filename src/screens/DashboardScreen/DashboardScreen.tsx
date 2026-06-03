@@ -303,17 +303,54 @@ function downloadTableAsXlsx(rows: Record<string, string | number>[], filename: 
   const esc = (v: string | number) =>
     String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  const csvLines = [
-    headers.map((h) => `"${esc(h)}"`).join(','),
-    ...rows.map((row) => headers.map((h) => `"${esc(row[h] ?? '')}"`).join(',')),
-  ];
+  // Premium Palette styling definitions interpreted natively by Excel layout engines
+  const headerBgColor = '#1B365D';   // Chambray Deep Slate Blue
+  const accentColor    = '#3AAD83';   // Ocean Green / Paradiso Accent
+  const textColor      = '#FFFFFF';   // White header text
+  const borderColor    = '#CBD5E1';   // Soft light border lines
 
-  const blob = new Blob(['\uFEFF' + csvLines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  // Inject beautiful, scannable CSS stylesheet rules directly into the file string wrapper
+  let htmlTemplate = `
+    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+    <head>
+      <meta charset="utf-8">
+      <style>
+        table { border-collapse: collapse; margin: 20px auto; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        th { background-color: ${headerBgColor}; color: ${textColor}; font-weight: bold; border: 1px solid ${borderColor}; padding: 12px 18px; text-align: center; }
+        td { border: 1px solid ${borderColor}; padding: 10px 16px; font-size: 14px; text-align: left; }
+        .metric-label { font-weight: 600; color: #334155; background-color: #F8FAFC; }
+        .metric-value { font-weight: 500; color: ${headerBgColor}; }
+        .highlight-row { border-left: 4px solid ${accentColor}; }
+      </style>
+    </head>
+    <body>
+      <table>
+        <thead>
+          <tr>
+            ${headers.map(h => `<th>${esc(h)}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row, idx) => `
+            <tr class="${idx === 2 ? 'highlight-row' : ''}">
+              <td class="metric-label">${esc(row[headers[0]] ?? '')}</td>
+              <td class="metric-value">${esc(row[headers[1]] ?? '')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </body>
+    </html>
+  `;
+
+  // Instantiate standard application octet blob object to launch seamless generation sequences
+  const blob = new Blob([htmlTemplate], { type: 'application/vnd.ms-excel;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
+  
   // @ts-ignore
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename + '.csv';
+  a.download = filename + '.xls';
   // @ts-ignore
   document.body.appendChild(a);
   a.click();
@@ -861,6 +898,7 @@ export const DashboardScreen: React.FC = () => {
   };
 
   const handlePhoneChange = (text: string) => {
+    setProfileMessage(null); 
     const digitsOnly = text.replace(/\D/g, '').slice(0, 10);
     if (digitsOnly.length > 1 && !digitsOnly.startsWith('05')) return;
     setProfilePhone(digitsOnly);
@@ -1020,8 +1058,10 @@ export const DashboardScreen: React.FC = () => {
       const name = profileName.trim();
       const email = profileEmail.trim();
       const phone = profilePhone.trim();
+      
       if (!silent) setProfileMessage(null);
 
+      // Frontend field rules validation
       if (!name || !email) {
         if (!silent) setProfileMessage({ type: 'error', text: 'Name and email are required.' });
         return false;
@@ -1039,6 +1079,23 @@ export const DashboardScreen: React.FC = () => {
         return false;
       }
 
+      // No-change check
+      const currentDbPhone = (user?.phone ?? (user as any)?.phone_num ?? '').trim();
+      const isUnchanged = 
+        name === (user?.name ?? '').trim() &&
+        email === (user?.email ?? '').trim() &&
+        phone === currentDbPhone;
+
+      if (isUnchanged) {
+        if (!silent) {
+          setProfileMessage({ 
+            type: 'error', 
+            text: 'No modifications detected. Please alter your email or phone number before saving.' 
+          });
+        }
+        return false;
+      }
+
       try {
         const res = await fetch(`${getApiBase()}/profile/update`, {
           method: 'PUT',
@@ -1048,36 +1105,40 @@ export const DashboardScreen: React.FC = () => {
             role: user?.role,
             name,
             email,
-            phone: profilePhone.trim(),
+            phone,
           }),
         });
+        
         const result = await res.json();
-        if (!res.ok) throw new Error(result.error || 'Update failed');
-        const u = result.user as
-          | { id?: string; name?: string; email?: string; phone?: string; nationalId?: string }
-          | undefined;
+        
+        // Dynamic error message handling direct from Flask API response
+        if (!res.ok) {
+          throw new Error(result.error || 'Profile update failed.');
+        }
+        
+        const u = result.user;
         if (u && user) {
           const nextName = typeof u.name === 'string' && u.name.trim() ? u.name.trim() : name;
           const nextEmail = typeof u.email === 'string' && u.email.trim() ? u.email.trim() : email;
-          const apiPhone = u.phone != null ? String(u.phone).trim() : '';
-          const nextPhone = apiPhone || profilePhone.trim();
+          const apiPhone = u.phone != null ? String(u.phone).trim() : u.phone_num != null ? String(u.phone_num).trim() : '';
+          const nextPhone = apiPhone || phone;
+          
           updateUser({
             name: nextName,
             email: nextEmail,
-            ...(nextPhone ? { phone: nextPhone } : {}),
+            phone: nextPhone,
           });
-          setProfileName(nextName);
-          setProfileEmail(nextEmail);
-          if (nextPhone) setProfilePhone(nextPhone);
         }
+        
         if (!silent) {
           setProfileMessage({ type: 'success', text: 'Profile updated successfully.' });
-        } else {
-          setProfileMessage(null);
         }
         return true;
       } catch (err: any) {
-        setProfileMessage({ type: 'error', text: err.message });
+        if (!silent) {
+          // Captures explicit error message ('Phone number is already registered...')
+          setProfileMessage({ type: 'error', text: err.message });
+        }
         return false;
       }
     },
@@ -2978,12 +3039,22 @@ const handleAddPatient = async () => {
 
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>{t('admin.form.fullName')}</AppText>
-                    <TextInput value={profileName} onChangeText={setProfileName} style={styles.recFormInput} />
+                    <TextInput 
+                      value={profileName} 
+                      onChangeText={(text) => { setProfileName(text); setProfileMessage(null); }} 
+                      style={styles.recFormInput} 
+                    />
                   </View>
 
                   <View style={styles.recFormField}>
                     <AppText style={styles.recFormLabel}>{t('admin.form.email')}</AppText>
-                    <TextInput value={profileEmail} onChangeText={setProfileEmail} keyboardType="email-address" autoCapitalize="none" style={styles.recFormInput} />
+                    <TextInput 
+                      value={profileEmail} 
+                      onChangeText={(text) => { setProfileEmail(text); setProfileMessage(null); }} 
+                      keyboardType="email-address" 
+                      autoCapitalize="none" 
+                      style={styles.recFormInput} 
+                    />
                   </View>
 
                   <View style={styles.recFormField}>
@@ -3653,14 +3724,22 @@ const handleAddPatient = async () => {
                         'Avg Accuracy': rep.accuracy,
                       };
                       if (Platform.OS === 'web') {
-                        downloadTableAsXlsx([xlsxRow], `report_${rep.id}`);
+                        const specialistSummaryTable = [
+                          { 'Report Metric': 'Clinical Report ID', 'Summary Value': rep.id },
+                          { 'Report Metric': 'Patient National ID', 'Summary Value': rep.patient },
+                          { 'Report Metric': 'Observation Date & Time', 'Summary Value': rep.date },
+                          { 'Report Metric': 'Top Predicted Arabic Word', 'Summary Value': formatPredictedWord(rep.word, isRTL) },
+                          { 'Report Metric': 'Average Pipeline Accuracy', 'Summary Value': rep.accuracy }
+                        ];
+                        downloadTableAsXlsx(specialistSummaryTable, `specialist_report_${rep.id}`);
                       } else {
                         const idNum = Number(rep.session_id ?? String(rep.id).replace('REP-', ''));
                         if (Number.isFinite(idNum)) {
                           Linking.openURL(liveDemoSessionReportXlsxUrl(idNum)).catch(() => undefined);
                         }
                       }
-                    }}
+                      }
+                    }
                   >
                     <Ionicons name="download-outline" size={18} color={colors.text.primary} />
                   </TouchableOpacity>
@@ -3891,14 +3970,22 @@ const handleAddPatient = async () => {
                         'Duration': s.duration,
                       };
                       if (Platform.OS === 'web') {
-                        downloadTableAsXlsx([xlsxRow], `session_${s.id}`);
+                        const sessionSummaryTable = [
+                          { 'Session Metric': 'Session Identifier', 'Summary Value': s.id },
+                          { 'Session Metric': 'Date & Time Timestamp', 'Summary Value': s.date },
+                          { 'Session Metric': 'Primary Decoded Vocabulary', 'Summary Value': formatPredictedWord(s.word, isRTL) },
+                          { 'Session Metric': 'Mean Architecture Confidence', 'Summary Value': s.accuracy },
+                          { 'Session Metric': 'Total Signal Duration', 'Summary Value': s.duration }
+                        ];
+                        downloadTableAsXlsx(sessionSummaryTable, `session_summary_${s.id}`);
                       } else {
                         const idNum = Number(s.session_id ?? String(s.id).replace('RS-', ''));
                         if (Number.isFinite(idNum)) {
                           Linking.openURL(liveDemoSessionReportXlsxUrl(idNum)).catch(() => undefined);
                         }
                       }
-                    }}
+                      }
+                    }
                   >
                     <Ionicons name="download-outline" size={18} color={colors.text.primary} />
                   </TouchableOpacity>

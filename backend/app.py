@@ -1867,55 +1867,79 @@ def toggle_patient_status(national_id):
 ##======    Update user profile   ======##
 @app.route('/profile/update', methods=['PUT'])
 def update_profile():
-    data        = request.get_json()
-    national_id = data.get('national_id', '').strip()
-    role        = data.get('role', '')
-    name        = data.get('name', '').strip()
-    email       = data.get('email', '').strip()
-    phone       = data.get('phone', '').strip()
+    data        = request.get_json() or {}
+    national_id = str(data.get('national_id', '')).strip()
+    role        = str(data.get('role', '')).strip()
+    name        = str(data.get('name', '')).strip()
+    email       = str(data.get('email', '')).strip()
+    phone       = str(data.get('phone', '')).strip()
 
     if not all([national_id, role, name, email]):
         return jsonify({'error': 'Required fields missing'}), 400
 
+    # Format Validations
+    import re as _re
+    if not _re.match(r'^[A-Za-z\u0600-\u06FF\s.\-]+$', name):
+        return jsonify({'error': 'Name must contain only letters, spaces, dots, or hyphens'}), 400
+    if not _re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        return jsonify({'error': 'Invalid email format'}), 400
+    if phone and not _re.match(r'^05\d{8}$', phone):
+        return jsonify({'error': 'Phone number must be 10 digits and start with 05'}), 400
+
+    # Locate the target user row
     if role == 'admin':
         user = Admin.query.filter_by(national_id=national_id).first()
     elif role == 'specialist':
         user = Specialist.query.filter_by(national_id=national_id).first()
-    elif role in ('patient', 'Patient'):
-        user = Patient.query.filter_by(national_id=national_id).first()
-    else:
+    elif role == 'RegisteredUser':
         user = RegisteredUser.query.filter_by(national_id=national_id).first()
+    else:
+        return jsonify({'error': f'Invalid role profile: {role}'}), 400
 
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
-    # Patients don't have email in our schema; only validate uniqueness for roles that store it
-    if role in ('patient', 'Patient'):
-        user.name = name
-        db.session.commit()
-        print(f"✅ Patient profile updated: {name} ({national_id})")
-        return jsonify({'message': 'Profile updated successfully', 'user': user.to_dict()}), 200
+    # ──── 1. STRICT EMAIL CROSS-TABLE CHECK ────
+    for table in (Admin, Specialist, RegisteredUser):
+        existing_email = table.query.filter_by(email=email).first()
+        if existing_email and str(existing_email.national_id) != national_id:
+            return jsonify({'error': 'Email is already registered to another account'}), 409
 
-    # Check email not already taken by someone else
-    if role == 'admin':
-        existing = Admin.query.filter_by(email=email).first()
-    elif role == 'specialist':
-        existing = Specialist.query.filter_by(email=email).first()
-    else:
-        existing = RegisteredUser.query.filter_by(email=email).first()
+    # ──── 2. STRICT PHONE CROSS-TABLE CHECK ────
+    if phone:
+        # Check Admin table (uses 'phone' column)
+        existing_admin_phone = Admin.query.filter_by(phone=phone).first()
+        if existing_admin_phone and str(existing_admin_phone.national_id) != national_id:
+            return jsonify({'error': 'Phone number is already registered to another account'}), 409
 
-    if existing and existing.national_id != national_id:
-        return jsonify({'error': 'Email already in use'}), 409
+        # Check Specialist table (uses 'phone' column)
+        existing_spec_phone = Specialist.query.filter_by(phone=phone).first()
+        if existing_spec_phone and str(existing_spec_phone.national_id) != national_id:
+            return jsonify({'error': 'Phone number is already registered to another account'}), 409
 
+        # Check RegisteredUser table (uses 'phone_num' column)
+        existing_reg_phone = RegisteredUser.query.filter_by(phone_num=phone).first()
+        if existing_reg_phone and str(existing_reg_phone.national_id) != national_id:
+            return jsonify({'error': 'Phone number is already registered to another account'}), 409
+
+    # Save updates safely
     user.name  = name
     user.email = email
-    if hasattr(user, 'phone') and phone:
-        user.phone = phone
-    if hasattr(user, 'phone_num') and phone:
+    
+    if role in ('admin', 'specialist'):
+        user.phone = phone if phone else None
+    elif role == 'RegisteredUser':
         user.phone_num = phone
 
-    db.session.commit()
-    print(f"✅ Profile updated: {name} ({national_id})")
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Database update failed: {str(e)}'}), 500
+
+    print(f"✅ Profile updated cleanly: {name} ({national_id})")
+    write_system_log(user.name, str(national_id), f'Updated own profile settings', role=role)
+    
     return jsonify({'message': 'Profile updated successfully', 'user': user.to_dict()}), 200
 
 
