@@ -274,76 +274,76 @@ def seed_database():
         # db.session.add_all([session_sarah, session_fatima])
         # db.session.commit() # Commit to get session_id for alerts
 
-       # ---------------------------------------------------------
+        # ---------------------------------------------------------
         # 4. Create EEG SESSIONS  (needs Patient, Specialist, Model)
         # ---------------------------------------------------------
-        # print("   Creating Sessions...")
-        # now = datetime.now()
+        print("   Creating Sessions...")
+        now = datetime.now()
 
-        # session_1 = EEGSession(
-        #     patient_national_id    = patient_sarah.national_id,
-        #     specialist_national_id = dr_sara.national_id,
-        #     model_id               = model_v2.model_id,
-        #     start_time             = now - timedelta(minutes=45),
-        #     end_time               = now - timedelta(minutes=15),
-        #     detected_word          = 'Thirst',
-        #     confidence_level       = 0.9200,
-        #     device                 = 'EPOC X',
-        #     channels               = 14,
-        #     session_status         = 'Ended',
-        # )
+        session_1 = EEGSession(
+            patient_national_id    = patient_sarah.national_id,
+            specialist_national_id = dr_sara.national_id,
+            model_id               = model_v2.model_id,
+            start_time             = now - timedelta(minutes=45),
+            end_time               = now - timedelta(minutes=15),
+            detected_word          = 'Thirst',
+            confidence_level       = 0.9200,
+            device                 = 'EPOC X',
+            channels               = 14,
+            session_status         = 'Ended',
+        )
 
-        # session_2 = EEGSession(
-        #     patient_national_id    = patient_fatima.national_id,
-        #     specialist_national_id = dr_sara.national_id,
-        #     model_id               = model_v2.model_id,
-        #     start_time             = now - timedelta(minutes=30),
-        #     end_time               = now - timedelta(minutes=10),
-        #     detected_word          = 'Medicine',
-        #     confidence_level       = 0.8800,
-        #     device                 = 'EPOC X',
-        #     channels               = 14,
-        #     session_status         = 'Ended',
-        # )
+        session_2 = EEGSession(
+            patient_national_id    = patient_fatima.national_id,
+            specialist_national_id = dr_sara.national_id,
+            model_id               = model_v2.model_id,
+            start_time             = now - timedelta(minutes=30),
+            end_time               = now - timedelta(minutes=10),
+            detected_word          = 'Medicine',
+            confidence_level       = 0.8800,
+            device                 = 'EPOC X',
+            channels               = 14,
+            session_status         = 'Ended',
+        )
 
-        # session_3 = EEGSession(
-        #     patient_national_id    = patient_hassan.national_id,
-        #     specialist_national_id = dr_omar.national_id,
-        #     model_id               = model_v2.model_id,
-        #     start_time             = now - timedelta(hours=1),
-        #     end_time               = now - timedelta(minutes=40),
-        #     detected_word          = 'Bathroom',
-        #     confidence_level       = 0.8400,
-        #     device                 = 'EPOC X',
-        #     channels               = 14,
-        #     session_status         = 'Ended',
-        # )
+        session_3 = EEGSession(
+            patient_national_id    = patient_hassan.national_id,
+            specialist_national_id = dr_omar.national_id,
+            model_id               = model_v2.model_id,
+            start_time             = now - timedelta(hours=1),
+            end_time               = now - timedelta(minutes=40),
+            detected_word          = 'Bathroom',
+            confidence_level       = 0.8400,
+            device                 = 'EPOC X',
+            channels               = 14,
+            session_status         = 'Ended',
+        )
 
-        # session_4 = EEGSession(
-        #     patient_national_id    = patient_maha.national_id,
-        #     specialist_national_id = dr_omar.national_id,
-        #     model_id               = model_v2.model_id,
-        #     start_time             = now - timedelta(minutes=20),
-        #     end_time               = now - timedelta(minutes=5),
-        #     detected_word          = 'Hunger',
-        #     confidence_level       = 0.8600,
-        #     device                 = 'EPOC X',
-        #     channels               = 14,
-        #     session_status         = 'Active',
-        # )
+        session_4 = EEGSession(
+            patient_national_id    = patient_maha.national_id,
+            specialist_national_id = dr_omar.national_id,
+            model_id               = model_v2.model_id,
+            start_time             = now - timedelta(minutes=20),
+            end_time               = now - timedelta(minutes=5),
+            detected_word          = 'Hunger',
+            confidence_level       = 0.8600,
+            device                 = 'EPOC X',
+            channels               = 14,
+            session_status         = 'Active',
+        )
 
-        # session_5 = EEGSession(
-        #     patient_national_id    = patient_yousef.national_id,
-        #     specialist_national_id = dr_nora.national_id,
-        #     model_id               = model_v2.model_id,
-        #     start_time             = now - timedelta(hours=2),
-        #     end_time               = now - timedelta(hours=1, minutes=30),
-        #     detected_word          = 'Alarm',
-        #     confidence_level       = 0.7900,
-        #     device                 = 'EPOC X',
-        #     channels               = 14,
-        #     session_status         = 'Ended',
-        # )
+        session_5 = EEGSession(
+            patient_national_id    = patient_yousef.national_id,
+            specialist_national_id = dr_nora.national_id,
+            model_id               = model_v2.model_id,
+            start_time             = now - timedelta(hours=2),
+            end_time               = now - timedelta(hours=1, minutes=30),
+            detected_word          = 'Alarm',
+            confidence_level       = 0.7900,
+            device                 = 'EPOC X',
+            channels               = 14,
+            session_status         = 'Ended',
+        )
 
         # session_6 = EEGSession(
         #     patient_national_id    = patient_noura.national_id,
@@ -384,9 +384,9 @@ def seed_database():
         #     session_status         = 'Ended',
         # )
 
-        # all_sessions = [session_1, session_2, session_3, session_4, session_5, session_6, session_7, session_8]
-        # db.session.add_all(all_sessions)
-        # db.session.commit()
+        all_sessions = [session_1, session_2, session_3, session_4, session_5]
+        db.session.add_all(all_sessions)
+        db.session.commit()
 
 
         # ---------------------------------------------------------
